@@ -7,6 +7,7 @@ const rateLimit = require('express-rate-limit');
 // Import routes
 const authRoutes = require('./src/routes/authRoutes');
 
+
 const app = express();
 
 // Security middleware

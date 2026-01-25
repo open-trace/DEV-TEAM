@@ -1,0 +1,56 @@
+// Prisma schema file
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// User model - for authentication
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  password  String
+  name      String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  chats     Chat[]
+
+  @@map("users")
+}
+
+// Chat model - represents a conversation thread
+model Chat {
+  id          String    @id @default(cuid())
+  title       String?   
+  userId      String
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  // Relations
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  messages    Message[]
+
+  @@map("chats")
+  @@index([userId])
+}
+
+// Message model - individual messages in a chat
+model Message {
+  id        String   @id @default(cuid())
+  chatId    String
+  role      String   // "user" or "assistant"
+  content   String   @db.Text
+  metadata  Json?    // For storing additional data (context type, timestamps, etc.)
+  createdAt DateTime @default(now())
+
+  // Relations
+  chat      Chat     @relation(fields: [chatId], references: [id], onDelete: Cascade)
+
+  @@map("messages")
+  @@index([chatId])
+}

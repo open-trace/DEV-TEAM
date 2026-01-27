@@ -8,7 +8,8 @@ const rateLimit = require('express-rate-limit');
 const authRoutes = require('./src/routes/authRoutes');
 
 const app = express();
-
+// import the prompt routes
+const promptRoutes = require("./src/routes/promptRoutes");
 // Security middleware
 app.use(helmet());
 app.use(cors());

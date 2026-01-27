@@ -1,0 +1,14 @@
+const express = require("express");
+const router = express.Router();
+
+const {
+  askQuestion,
+  getHistory,
+} = require("../controllers/promptController");
+
+const authMiddleware = require("../middleware/authMiddleware");
+
+router.post("/ask", authMiddleware, askQuestion);
+router.get("/history", authMiddleware, getHistory);
+
+module.exports = router;

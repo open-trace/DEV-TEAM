@@ -21,6 +21,8 @@ const limiter = rateLimit({
 });
 app.use('/api/', limiter);
 
+app.use("/api/prompts", promptRoutes);
+
 // Body parser
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));

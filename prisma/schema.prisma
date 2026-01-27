@@ -39,6 +39,16 @@ model Chat {
   @@index([userId])
 }
 
+model Prompt {
+  id        Int      @id @default(autoincrement())
+  question  String
+  answer    String
+  userId    Int
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id])
+}
+
 // Message model - individual messages in a chat
 model Message {
   id        String   @id @default(cuid())

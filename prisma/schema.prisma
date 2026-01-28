@@ -54,3 +54,12 @@ model Message {
   @@map("messages")
   @@index([chatId])
 }
+
+model Prompt {
+  id        Int      @id @default(autoincrement())
+  question  String
+  answer    String
+  userId    Int
+  user      User     @relation(fields: [userId], references: [id])
+  createdAt DateTime @default(now())
+}

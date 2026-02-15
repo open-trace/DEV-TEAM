@@ -19,6 +19,7 @@ model User {
 
   // Relations
   chats     Chat[]
+  prompts   Prompt[]
 
   @@map("users")
 }
@@ -56,10 +57,15 @@ model Message {
 }
 
 model Prompt {
-  id        Int      @id @default(autoincrement())
+  id        String   @id @default(cuid())
   question  String
   answer    String
-  userId    Int
-  user      User     @relation(fields: [userId], references: [id])
+  userId    String
   createdAt DateTime @default(now())
+
+  // Relations
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("prompts")
+  @@index([userId])
 }

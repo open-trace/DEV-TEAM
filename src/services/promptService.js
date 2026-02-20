@@ -1,34 +1,42 @@
 const prisma = require('../utils/prismaClient');
-const { askAI } = require('./aiService');
 
 /**
- * Create a new prompt by asking AI and saving to database
+ * Get all Q&A pairs from user's chat messages
  * @param {string} userId - User's ID
- * @param {string} question - User's question
- * @returns {object} Created prompt with answer
+ * @returns {array} Array of Q&A pairs extracted from chat messages
  */
-exports.createPrompt = async (userId, question) => {
-  // Call external AI API to get answer
-  const answer = await askAI(question);
-
-  // Save question and answer to database
-  return prisma.prompt.create({
-    data: {
-      question,
-      answer,
-      userId
-    }
-  });
-};
-
-/**
- * Get all prompts for a specific user
- * @param {string} userId - User's ID
- * @returns {array} Array of user's prompts, newest first
- */
-exports.getUserPrompts = (userId) => {
-  return prisma.prompt.findMany({
+exports.getUserPrompts = async (userId) => {
+  // Get all user's chats with messages
+  const chats = await prisma.chat.findMany({
     where: { userId },
-    orderBy: { createdAt: 'desc' }  // Newest first
+    include: {
+      messages: {
+        orderBy: { createdAt: 'asc' } // Oldest message first
+      }
+    },
+    orderBy: { createdAt: 'desc' } // Newest chat first
   });
+
+  // Extract Q&A pairs from messages
+  const prompts = [];
+
+  for (const chat of chats) {
+    // Group messages in pairs (user question + assistant answer)
+    for (let i = 0; i < chat.messages.length - 1; i += 2) {
+      const userMsg = chat.messages[i];
+      const assistantMsg = chat.messages[i + 1];
+
+      if (userMsg?.role === 'user' && assistantMsg?.role === 'assistant') {
+        prompts.push({
+          id: userMsg.id,
+          question: userMsg.content,
+          answer: assistantMsg.content,
+          chatId: chat.id,
+          createdAt: userMsg.createdAt
+        });
+      }
+    }
+  }
+
+  return prompts;
 };

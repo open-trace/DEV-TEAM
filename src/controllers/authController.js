@@ -1,4 +1,5 @@
 const { registerUser, loginUser } = require('../services/authService');
+const { blacklistToken } = require('../utils/tokenUtils');
 
 /**
  * Handle user signup
@@ -72,7 +73,34 @@ const login = async (req, res) => {
   }
 };
 
+/**
+ * Handle user logout
+ * @route POST /api/auth/logout
+ */
+const logout = async (req, res) => {
+  try {
+    // Get token from middleware
+    const token = req.token; 
+
+    // Add token to blacklist
+    blacklistToken(token);
+
+    return res.status(200).json({
+      success: true,
+      message: 'Logged out successfully'
+    });
+
+  } catch (error) {
+    console.error('Logout controller error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Server error during logout'
+    });
+  }
+};
+
 module.exports = {
   signup,
-  login
+  login,
+  logout
 };

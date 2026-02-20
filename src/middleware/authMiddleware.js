@@ -1,4 +1,4 @@
-const { verifyToken } = require('../utils/tokenUtils');
+const { verifyToken, isTokenBlacklisted } = require('../utils/tokenUtils');
 const prisma = require('../utils/prismaClient');
 
 /**
@@ -15,6 +15,11 @@ const auth = async (req, res, next) => {
     }
 
     const token = authHeader.split(' ')[1];
+
+    // Check if token is blacklisted (logged out)
+    if (isTokenBlacklisted(token)) {
+      return res.status(401).json({ error: 'Token has been invalidated. Please login again.' });
+    }
 
     // Verify token
     const decoded = verifyToken(token);
@@ -33,8 +38,9 @@ const auth = async (req, res, next) => {
       return res.status(401).json({ error: 'User not found' });
     }
 
-    // Attach user to request
+    // Attach user and token to request
     req.user = user;
+    req.token = token;
 
     // Continue to next middleware/route
     next();

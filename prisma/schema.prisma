@@ -19,7 +19,6 @@ model User {
 
   // Relations
   chats     Chat[]
-  prompts   Prompt[]
 
   @@map("users")
 }
@@ -27,7 +26,8 @@ model User {
 // Chat model - represents a conversation thread
 model Chat {
   id          String    @id @default(cuid())
-  title       String?   
+  title       String?
+  category    String?   // User type: Government, NGOs, Agribusinesses, Farmers
   userId      String
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
@@ -54,18 +54,4 @@ model Message {
 
   @@map("messages")
   @@index([chatId])
-}
-
-model Prompt {
-  id        String   @id @default(cuid())
-  question  String
-  answer    String
-  userId    String
-  createdAt DateTime @default(now())
-
-  // Relations
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  @@map("prompts")
-  @@index([userId])
 }

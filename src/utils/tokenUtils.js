@@ -1,5 +1,8 @@
 const jwt = require('jsonwebtoken');
 
+// In-memory token blacklist (use Redis in production)
+const tokenBlacklist = new Set();
+
 /**
  * Generate JWT token for user authentication
  * @param {string} userId - The user's unique identifier
@@ -27,7 +30,26 @@ const verifyToken = (token) => {
   }
 };
 
+/**
+ * Add token to blacklist (logout)
+ * @param {string} token - Token to blacklist
+ */
+const blacklistToken = (token) => {
+  tokenBlacklist.add(token);
+};
+
+/**
+ * Check if token is blacklisted
+ * @param {string} token - Token to check
+ * @returns {boolean} True if blacklisted
+ */
+const isTokenBlacklisted = (token) => {
+  return tokenBlacklist.has(token);
+};
+
 module.exports = {
   generateToken,
-  verifyToken
+  verifyToken,
+  blacklistToken,
+  isTokenBlacklisted
 };

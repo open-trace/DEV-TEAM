@@ -125,7 +125,102 @@ const loginUser = async (email, password) => {
   }
 };
 
+/**
+ * Update user profile
+ * @param {string} userId - User's ID
+ * @param {object} updates - Fields to update (name, email, password)
+ * @returns {object|null} Updated user or null if email conflict
+ */
+const updateUser = async (userId, updates) => {
+  try {
+    const { name, email, password } = updates;
+    const updateData = {};
+
+    // Add name if provided
+    if (name !== undefined) {
+      updateData.name = name;
+    }
+
+    // Add email if provided (check for duplicates)
+    if (email !== undefined) {
+      const existingUser = await prisma.user.findUnique({
+        where: { email }
+      });
+
+      // If email exists and belongs to another user
+      if (existingUser && existingUser.id !== userId) {
+        return null; // Email conflict
+      }
+
+      updateData.email = email;
+    }
+
+    // Hash password if provided
+    if (password !== undefined) {
+      const salt = await bcrypt.genSalt(10);
+      updateData.password = await bcrypt.hash(password, salt);
+    }
+
+    // Update user in database
+    const updatedUser = await prisma.user.update({
+      where: { id: userId },
+      data: updateData,
+      select: {
+        id: true,
+        email: true,
+        name: true,
+        createdAt: true
+      }
+    });
+
+    return updatedUser;
+
+  } catch (error) {
+    console.error('Update user error:', error);
+    throw error;
+  }
+};
+
+/**
+ * Delete user account
+ * @param {string} userId - User's ID
+ * @param {string} password - User's password for confirmation
+ * @returns {object} { success, message }
+ */
+const deleteUser = async (userId, password) => {
+  try {
+    // Get user from database
+    const user = await prisma.user.findUnique({
+      where: { id: userId }
+    });
+
+    if (!user) {
+      return { success: false, message: 'User not found' };
+    }
+
+    // Verify password
+    const isPasswordValid = await bcrypt.compare(password, user.password);
+
+    if (!isPasswordValid) {
+      return { success: false, message: 'Incorrect password' };
+    }
+
+    // Delete user (chats and messages will cascade delete)
+    await prisma.user.delete({
+      where: { id: userId }
+    });
+
+    return { success: true, message: 'Account deleted successfully' };
+
+  } catch (error) {
+    console.error('Delete user error:', error);
+    throw error;
+  }
+};
+
 module.exports = {
   registerUser,
-  loginUser
+  loginUser,
+  updateUser,
+  deleteUser
 };

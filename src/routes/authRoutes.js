@@ -1,5 +1,6 @@
 const express = require('express');
-const { signup, login } = require('../controllers/authController');
+const { signup, login, logout } = require('../controllers/authController');
+const auth = require('../middleware/authMiddleware');
 
 const router = express.Router();
 
@@ -16,5 +17,12 @@ router.post('/signup', signup);
  * @access  Public
  */
 router.post('/login', login);
+
+/**
+ * @route   POST /api/auth/logout
+ * @desc    Logout user (invalidate token)
+ * @access  Protected
+ */
+router.post('/logout', auth, logout);
 
 module.exports = router;

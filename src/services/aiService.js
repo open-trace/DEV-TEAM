@@ -1,8 +1,9 @@
-const axios = require('axios');
+const axios = require("axios");
 
 // Get AI API configuration from environment variables
 const AI_API_URL = process.env.AI_API_URL;
 const AI_API_KEY = process.env.AI_API_KEY;
+const AI_MODEL_NAME = process.env.AI_MODEL_NAME;
 
 /**
  * Send a question to external AI API and get answer
@@ -10,29 +11,51 @@ const AI_API_KEY = process.env.AI_API_KEY;
  * @returns {string} AI-generated answer
  */
 exports.askAI = async (prompt) => {
-  // MOCK MODE: Return a dummy response for testing
-  if (!AI_API_URL || !AI_API_KEY || AI_API_URL === 'mock' || AI_API_URL === 'test') {
-    console.log('Using mock AI response (AI API not configured)');
-    return `This is a mock AI response to your question: "${prompt}". In production, this would be replaced with actual AI-generated content from your configured AI service.`;
-  }
-
   try {
-    // Make POST request to AI API
+    // POST request to Hugging Face Router API (OpenAI-compatible format)
     const response = await axios.post(
       AI_API_URL,
-      { prompt },
+      {
+        model: AI_MODEL_NAME,
+        messages: [
+          {
+            role: "user",
+            content: prompt
+          }
+        ],
+        max_tokens: 500,
+        temperature: 0.7
+      },
       {
         headers: {
           Authorization: `Bearer ${AI_API_KEY}`,
-          'Content-Type': 'application/json'
-        }
-      }
+          "Content-Type": "application/json",
+        },
+        timeout: 30000, // 30 seconds for larger model
+      },
     );
 
-    // Extract and return the answer from response
-    return response.data.answer;
+    // OpenAI-compatible response
+    // Response format: {choices: [{message: {content: "answer"}}]}
+    const answer = response.data.choices[0].message.content;
+
+    return answer;
   } catch (error) {
-    console.error('AI API Error:', error.response?.data || error.message);
-    throw new Error('Failed to get AI response');
+    console.error("AI API Error:", error.response?.data || error.message);
+    console.error("Full error details:", {
+      status: error.response?.status,
+      statusText: error.response?.statusText,
+      url: error.config?.url,
+      data: error.response?.data
+    });
+
+    // Handle model loading (common on first request)
+    if (error.response?.status === 503) {
+      throw new Error(
+        "AI model is loading. Please wait 20-30 seconds and try again.",
+      );
+    }
+
+    throw new Error("Failed to get AI response");
   }
 };

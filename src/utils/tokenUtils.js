@@ -1,4 +1,5 @@
 const jwt = require('jsonwebtoken');
+const crypto = require('node:crypto');
 
 // In-memory token blacklist (use Redis in production)
 const tokenBlacklist = new Set();
@@ -26,6 +27,8 @@ const verifyToken = (token) => {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
     return decoded;
   } catch (error) {
+    // Token is invalid or expired - return null
+    console.error('Token verification failed:', error.message);
     return null;
   }
 };
@@ -47,9 +50,29 @@ const isTokenBlacklisted = (token) => {
   return tokenBlacklist.has(token);
 };
 
+/**
+ * Generate a secure random token for email verification
+ * @returns {string} Random hex token (64 characters)
+ */
+const generateVerificationToken = () => {
+  return crypto.randomBytes(32).toString('hex');
+};
+
+/**
+ * Get expiry date for verification token (24 hours from now)
+ * @returns {Date} Expiry datetime
+ */
+const getVerificationTokenExpiry = () => {
+  const now = new Date();
+  now.setHours(now.getHours() + 24);
+  return now;
+};
+
 module.exports = {
   generateToken,
   verifyToken,
   blacklistToken,
-  isTokenBlacklisted
+  isTokenBlacklisted,
+  generateVerificationToken,
+  getVerificationTokenExpiry
 };

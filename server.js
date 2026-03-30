@@ -6,6 +6,9 @@ const rateLimit = require('express-rate-limit');
 
 // Import authentication routes
 const authRoutes = require('./src/routes/authRoutes');
+const userRoutes = require('./src/routes/userRoutes');
+const promptRoutes = require('./src/routes/promptRoutes');
+const chatRoutes = require('./src/routes/chatRoutes');
 
 const app = express();
 
@@ -37,6 +40,9 @@ app.get('/api', (req, res) => {
 
 // Auth routes
 app.use('/api/auth', authRoutes);
+app.use('/api/users', userRoutes);
+app.use('/api/prompts', promptRoutes);
+app.use('/api/chats', chatRoutes);
 
 // 404 handler
 app.use((req, res) => {

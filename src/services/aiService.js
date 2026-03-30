@@ -1,0 +1,61 @@
+const axios = require("axios");
+
+// Get AI API configuration from environment variables
+const AI_API_URL = process.env.AI_API_URL;
+const AI_API_KEY = process.env.AI_API_KEY;
+const AI_MODEL_NAME = process.env.AI_MODEL_NAME;
+
+/**
+ * Send a question to external AI API and get answer
+ * @param {string} prompt - The question to ask the AI
+ * @returns {string} AI-generated answer
+ */
+exports.askAI = async (prompt) => {
+  try {
+    // POST request to Hugging Face Router API (OpenAI-compatible format)
+    const response = await axios.post(
+      AI_API_URL,
+      {
+        model: AI_MODEL_NAME,
+        messages: [
+          {
+            role: "user",
+            content: prompt
+          }
+        ],
+        max_tokens: 500,
+        temperature: 0.7
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${AI_API_KEY}`,
+          "Content-Type": "application/json",
+        },
+        timeout: 30000, // 30 seconds for larger model
+      },
+    );
+
+    // OpenAI-compatible response
+    // Response format: {choices: [{message: {content: "answer"}}]}
+    const answer = response.data.choices[0].message.content;
+
+    return answer;
+  } catch (error) {
+    console.error("AI API Error:", error.response?.data || error.message);
+    console.error("Full error details:", {
+      status: error.response?.status,
+      statusText: error.response?.statusText,
+      url: error.config?.url,
+      data: error.response?.data
+    });
+
+    // Handle model loading (common on first request)
+    if (error.response?.status === 503) {
+      throw new Error(
+        "AI model is loading. Please wait 20-30 seconds and try again.",
+      );
+    }
+
+    throw new Error("Failed to get AI response");
+  }
+};

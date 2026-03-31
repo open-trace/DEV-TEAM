@@ -1,6 +1,6 @@
 const router = require('express').Router();
 const auth = require('../middleware/authMiddleware');
-const { getProfile, updateProfile, deleteAccount } = require('../controllers/userController');
+const { getProfile, updateProfile, deleteAccount, getSettings, updateSettings } = require('../controllers/userController');
 
 /**
  * @route   GET /api/users/me
@@ -22,5 +22,19 @@ router.put('/me', auth, updateProfile);
  * @access  Protected (requires authentication)
  */
 router.delete('/me', auth, deleteAccount);
+
+/**
+ * @route   GET /api/users/settings
+ * @desc    Get user settings
+ * @access  Protected (requires authentication)
+ */
+router.get('/settings', auth, getSettings);
+
+/**
+ * @route   PUT /api/users/settings
+ * @desc    Update user settings
+ * @access  Protected (requires authentication)
+ */
+router.put('/settings', auth, updateSettings);
 
 module.exports = router;

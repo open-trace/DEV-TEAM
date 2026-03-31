@@ -1,4 +1,5 @@
 const authService = require('../services/authService');
+const { getUserSettings, updateUserSettings } = require('../services/userService');
 const { isValidEmail, isValidPassword, isValidName } = require('../utils/validators');
 
 /**
@@ -79,5 +80,58 @@ exports.deleteAccount = async (req, res) => {
   } catch (error) {
     console.error('Delete account error:', error);
     res.status(500).json({ error: 'Failed to delete account' });
+  }
+};
+
+/**
+ * Get user settings
+ * @route GET /api/users/settings
+ * @access Protected
+ */
+exports.getSettings = async (req, res) => {
+  try {
+    const userId = req.user.id;
+
+    const result = await getUserSettings(userId);
+
+    if (!result.success) {
+      return res.status(404).json({ error: result.message });
+    }
+
+    res.status(200).json({
+      success: true,
+      settings: result.settings
+    });
+  } catch (error) {
+    console.error('Get settings error:', error);
+    res.status(500).json({ error: 'Failed to retrieve settings' });
+  }
+};
+
+/**
+ * Update user settings
+ * @route PUT /api/users/settings
+ * @access Protected
+ */
+exports.updateSettings = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const updates = req.body;
+
+    // Validate that at least one setting is provided
+    if (!updates || Object.keys(updates).length === 0) {
+      return res.status(400).json({ error: 'At least one setting must be provided' });
+    }
+
+    const result = await updateUserSettings(userId, updates);
+
+    if (!result.success) {
+      return res.status(400).json({ error: result.message });
+    }
+
+    res.status(200).json(result);
+  } catch (error) {
+    console.error('Update settings error:', error);
+    res.status(500).json({ error: 'Failed to update settings' });
   }
 };

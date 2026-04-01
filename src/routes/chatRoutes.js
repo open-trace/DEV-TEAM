@@ -1,6 +1,6 @@
 const router = require('express').Router();
 const auth = require('../middleware/authMiddleware');
-const { sendChat, getAllChats, getChatById, addMessageToChat, deleteChat, updateChatTitle } = require('../controllers/chatController');
+const { sendChat, getAllChats, getChatById, addMessageToChat, deleteChat, updateChatTitle, archiveChat, unarchiveChat, shareChat, unshareChat, getSharedChat } = require('../controllers/chatController');
 
 /**
  * @route   GET /api/chats/
@@ -29,6 +29,41 @@ router.post('/', auth, sendChat);
  * @access  Protected (requires authentication)
  */
 router.post('/:id/messages', auth, addMessageToChat);
+
+/**
+ * @route   POST /api/chats/:id/archive
+ * @desc    Archive a chat (hide without deleting)
+ * @access  Protected (requires authentication)
+ */
+router.post('/:id/archive', auth, archiveChat);
+
+/**
+ * @route   POST /api/chats/:id/unarchive
+ * @desc    Unarchive a chat
+ * @access  Protected (requires authentication)
+ */
+router.post('/:id/unarchive', auth, unarchiveChat);
+
+/**
+ * @route   POST /api/chats/:id/share
+ * @desc    Share a chat (generate public link)
+ * @access  Protected (requires authentication)
+ */
+router.post('/:id/share', auth, shareChat);
+
+/**
+ * @route   POST /api/chats/:id/unshare
+ * @desc    Unshare a chat (revoke public link)
+ * @access  Protected (requires authentication)
+ */
+router.post('/:id/unshare', auth, unshareChat);
+
+/**
+ * @route   GET /api/chats/share/:shareToken
+ * @desc    Get a shared chat by token (public access, no auth needed)
+ * @access  Public
+ */
+router.get('/share/:shareToken', getSharedChat);
 
 /**
  * @route   PATCH /api/chats/:id

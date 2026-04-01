@@ -1,20 +1,29 @@
+const crypto = require('node:crypto');
 const prisma = require('../utils/prismaClient');
 const { askAI } = require('./aiService');
 
 /**
  * Get all chats for a user
  * @param {string} userId - User's ID
+ * @param {boolean} includeArchived - Include archived chats (defaults to true)
  * @returns {array} Array of chats
  */
-exports.getUserChats = async (userId) => {
+exports.getUserChats = async (userId, includeArchived = true) => {
+  // Build where clause
+  const where = { userId };
+  if (!includeArchived) {
+    where.archived = false; // Only non-archived chats
+  }
+
   // Fetch all chats for the user, ordered by most recent first
   const chats = await prisma.chat.findMany({
-    where: { userId },
+    where,
     orderBy: { createdAt: 'desc' },
     select: {
       id: true,
       title: true,
       category: true,
+      archived: true,
       createdAt: true
     }
   });
@@ -146,6 +155,145 @@ exports.addMessageToExistingChat = async (chatId, userId, message) => {
   });
 
   return updatedChat;
+};
+
+/**
+ * Archive a chat (hides chat without deleting)
+ * @param {string} chatId - Chat's ID
+ * @param {string} userId - User's ID (for authorization)
+ * @returns {object} Archived chat
+ */
+exports.archiveChat = async (chatId, userId) => {
+  // Verify ownership
+  const chat = await prisma.chat.findFirst({
+    where: { id: chatId, userId }
+  });
+
+  if (!chat) {
+    throw new Error('Chat not found or unauthorized');
+  }
+
+  // Archive the chat
+  const archivedChat = await prisma.chat.update({
+    where: { id: chatId },
+    data: { archived: true }
+  });
+
+  return archivedChat;
+};
+
+/**
+ * Unarchive a chat
+ * @param {string} chatId - Chat's ID
+ * @param {string} userId - User's ID (for authorization)
+ * @returns {object} Unarchived chat
+ */
+exports.unarchiveChat = async (chatId, userId) => {
+  // Verify ownership
+  const chat = await prisma.chat.findFirst({
+    where: { id: chatId, userId }
+  });
+
+  if (!chat) {
+    throw new Error('Chat not found or unauthorized');
+  }
+
+  // Unarchive the chat
+  const unarchivedChat = await prisma.chat.update({
+    where: { id: chatId },
+    data: { archived: false }
+  });
+
+  return unarchivedChat;
+};
+
+/**
+ * Share a chat with a unique token
+ * @param {string} chatId - Chat's ID
+ * @param {string} userId - User's ID (for authorization)
+ * @returns {object} Shared chat with shareToken
+ */
+exports.shareChat = async (chatId, userId) => {
+  // Verify ownership
+  const chat = await prisma.chat.findFirst({
+    where: { id: chatId, userId }
+  });
+
+  if (!chat) {
+    throw new Error('Chat not found or unauthorized');
+  }
+
+  // Generate unique share token (using chatId + random string)
+  const shareToken = `${chatId.substring(0, 8)}-${crypto.randomBytes(8).toString('hex')}`
+
+  // Share the chat
+  const sharedChat = await prisma.chat.update({
+    where: { id: chatId },
+    data: {
+      isShared: true,
+      shareToken
+    }
+  });
+
+  return sharedChat;
+};
+
+/**
+ * Unshare a chat (revoke public access)
+ * @param {string} chatId - Chat's ID
+ * @param {string} userId - User's ID (for authorization)
+ * @returns {object} Unshared chat
+ */
+exports.unshareChat = async (chatId, userId) => {
+  // Verify ownership
+  const chat = await prisma.chat.findFirst({
+    where: { id: chatId, userId }
+  });
+
+  if (!chat) {
+    throw new Error('Chat not found or unauthorized');
+  }
+
+  // Unshare the chat
+  const unsharedChat = await prisma.chat.update({
+    where: { id: chatId },
+    data: {
+      isShared: false,
+      shareToken: null
+    }
+  });
+
+  return unsharedChat;
+};
+
+/**
+ * Get a shared chat by token (public access - no authentication required)
+ * @param {string} shareToken - Share token
+ * @returns {object} Chat with messages (read-only view)
+ */
+exports.getSharedChat = async (shareToken) => {
+  // Fetch chat by shareToken
+  const chat = await prisma.chat.findUnique({
+    where: { shareToken },
+    include: {
+      messages: {
+        orderBy: { createdAt: 'asc' }
+      }
+    }
+  });
+
+  if (!chat?.isShared) {
+    throw new Error('Shared chat not found or no longer shared');
+  }
+
+  // Return chat without sensitive data (userId not included in response)
+  return {
+    id: chat.id,
+    title: chat.title,
+    category: chat.category,
+    createdAt: chat.createdAt,
+    messages: chat.messages
+  };
 };
 
 /**

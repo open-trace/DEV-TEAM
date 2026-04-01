@@ -34,6 +34,9 @@ model Chat {
   title       String?
   category    String?   // User type: Government, NGOs, Agribusinesses, Farmers
   userId      String
+  archived    Boolean   @default(false)   // Archive status
+  isShared    Boolean   @default(false)   // Share status
+  shareToken  String?   @unique           // Unique token for public sharing
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
 
@@ -43,6 +46,7 @@ model Chat {
 
   @@map("chats")
   @@index([userId])
+  @@index([shareToken])
 }
 
 // Message model - individual messages in a chat

@@ -4,11 +4,12 @@ const cors = require('cors');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 
-// Import authentication routes
+// Import routes
 const authRoutes = require('./src/routes/authRoutes');
 const userRoutes = require('./src/routes/userRoutes');
 const promptRoutes = require('./src/routes/promptRoutes');
 const chatRoutes = require('./src/routes/chatRoutes');
+const subscriptionRoutes = require('./src/routes/subscriptionRoutes');
 
 const app = express();
 
@@ -38,11 +39,12 @@ app.get('/api', (req, res) => {
   res.json({ message: 'Welcome to OpenTrace API' });
 });
 
-// Auth routes
+// Routes
 app.use('/api/auth', authRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/prompts', promptRoutes);
 app.use('/api/chats', chatRoutes);
+app.use('/api/subscriptions', subscriptionRoutes);
 
 // 404 handler
 app.use((req, res) => {

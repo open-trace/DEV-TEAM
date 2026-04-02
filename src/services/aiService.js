@@ -8,21 +8,30 @@ const AI_MODEL_NAME = process.env.AI_MODEL_NAME;
 /**
  * Send a question to external AI API and get answer
  * @param {string} prompt - The question to ask the AI
+ * @param {string|null} category - Optional category/perspective (Government, NGOs, Agribusinesses, Farmers, Integrated)
  * @returns {string} AI-generated answer
  */
-exports.askAI = async (prompt) => {
+exports.askAI = async (prompt, category = null) => {
   try {
+    // Build messages array - include system message with category if provided
+    const messages = [];
+    if (category) {
+      messages.push({
+        role: "system",
+        content: `You are responding from the perspective of: ${category}. Tailor your response accordingly.`
+      });
+    }
+    messages.push({
+      role: "user",
+      content: prompt
+    });
+
     // POST request to Hugging Face Router API (OpenAI-compatible format)
     const response = await axios.post(
       AI_API_URL,
       {
         model: AI_MODEL_NAME,
-        messages: [
-          {
-            role: "user",
-            content: prompt
-          }
-        ],
+        messages,
         max_tokens: 500,
         temperature: 0.7
       },

@@ -1,6 +1,7 @@
 const crypto = require('node:crypto');
 const prisma = require('../utils/prismaClient');
 const { askAI } = require('./aiService');
+const subscriptionService = require('./subscriptionService');
 
 /**
  * Get all chats for a user
@@ -58,19 +59,43 @@ exports.getChatWithMessages = async (chatId, userId) => {
  * Send a message in a chat and get AI response
  * @param {string} userId - User's ID
  * @param {string} message - User's message
- * @param {string|undefined} category - Optional category (Government, NGOs, Agribusinesses, Farmers)
+ * @param {string|undefined} perspective - Optional perspective for Integrated users (Government, NGOs, Agribusinesses, Farmers, Integrated)
  * @returns {object} Chat with messages
  */
-exports.sendMessage = async (userId, message, category = null) => {
-  // Get AI response
-  const aiResponse = await askAI(message);
+exports.sendMessage = async (userId, message, perspective = null) => {
+  // Check if subscription is active
+  const isActive = await subscriptionService.isSubscriptionActive(userId);
+  if (!isActive) {
+    throw new Error('Subscription not active. Please complete payment to access chat.');
+  }
 
-  // Create a new chat with title and optional category
+  // Get user's subscription to determine category
+  const subscription = await subscriptionService.getCurrentSubscription(userId);
+  if (!subscription) {
+    throw new Error('No subscription found. Please select a plan first.');
+  }
+
+  // Determine category based on subscription plan
+  let category = subscription.planType; // Government, NGOs, Agribusinesses, Farmers, or Integrated
+
+  // For Integrated users, allow optional perspective parameter
+  if (subscription.planType === 'Integrated' && perspective) {
+    const validPerspectives = ['Government', 'NGOs', 'Agribusinesses', 'Farmers', 'Integrated'];
+    if (!validPerspectives.includes(perspective)) {
+      throw new Error(`Invalid perspective: ${perspective}`);
+    }
+    category = perspective;
+  }
+
+  // Get AI response (pass category so AI knows the perspective)
+  const aiResponse = await askAI(message, category);
+
+  // Create a new chat with title and auto-set category based on subscription
   const chat = await prisma.chat.create({
     data: {
       userId,
       title: message.substring(0, 50), // Use first 50 characters as title
-      category: category || null
+      category // Auto-set from subscription
     }
   });
 
@@ -79,7 +104,8 @@ exports.sendMessage = async (userId, message, category = null) => {
     data: {
       chatId: chat.id,
       role: 'user',
-      content: message
+      content: message,
+      category: category  // Track which perspective/category this message used
     }
   });
 
@@ -88,7 +114,8 @@ exports.sendMessage = async (userId, message, category = null) => {
     data: {
       chatId: chat.id,
       role: 'assistant',
-      content: aiResponse
+      content: aiResponse,
+      category: category  // Track which perspective/category this response used
     }
   });
 
@@ -108,9 +135,16 @@ exports.sendMessage = async (userId, message, category = null) => {
  * @param {string} chatId - Chat's ID
  * @param {string} userId - User's ID (for authorization)
  * @param {string} message - User's message
+ * @param {string|undefined} perspective - Optional perspective for Integrated users
  * @returns {object} Updated chat with all messages
  */
-exports.addMessageToExistingChat = async (chatId, userId, message) => {
+exports.addMessageToExistingChat = async (chatId, userId, message, perspective = null) => {
+  // Check if subscription is active
+  const isActive = await subscriptionService.isSubscriptionActive(userId);
+  if (!isActive) {
+    throw new Error('Subscription not active. Please complete payment to access chat.');
+  }
+
   // First, verify the chat exists and belongs to the user
   const chat = await prisma.chat.findFirst({
     where: {
@@ -123,15 +157,28 @@ exports.addMessageToExistingChat = async (chatId, userId, message) => {
     return null; // Chat not found or unauthorized
   }
 
-  // Get AI response
-  const aiResponse = await askAI(message);
+  // Get subscription to check if user is Integrated
+  const subscription = await subscriptionService.getCurrentSubscription(userId);
+
+  // For Integrated users, allow perspective override; otherwise use chat's existing category
+  let responseCategory = chat.category;
+  if (subscription && subscription.planType === 'Integrated' && perspective) {
+    const validPerspectives = ['Government', 'NGOs', 'Agribusinesses', 'Farmers', 'Integrated'];
+    if (validPerspectives.includes(perspective)) {
+      responseCategory = perspective;
+    }
+  }
+
+  // Get AI response (pass category so AI knows the perspective)
+  const aiResponse = await askAI(message, responseCategory);
 
   // Create user's message
   const userMessage = await prisma.message.create({
     data: {
       chatId,
       role: 'user',
-      content: message
+      content: message,
+      category: responseCategory  // Track which perspective/category this message used
     }
   });
 
@@ -140,7 +187,8 @@ exports.addMessageToExistingChat = async (chatId, userId, message) => {
     data: {
       chatId,
       role: 'assistant',
-      content: aiResponse
+      content: aiResponse,
+      category: responseCategory  // Track which perspective/category this response used
     }
   });
 

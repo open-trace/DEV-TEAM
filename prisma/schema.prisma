@@ -23,9 +23,31 @@ model User {
   updatedAt DateTime @updatedAt
 
   // Relations
-  chats     Chat[]
+  chats         Chat[]
+  subscription  Subscription?
 
   @@map("users")
+}
+
+// Subscription model - user subscription plans
+model Subscription {
+  id              String   @id @default(cuid())
+  userId          String   @unique
+  planType        String   // "Government", "NGOs", "Agribusinesses", "Farmers", "Integrated"
+  price           Float    // Price per month
+  status          String   @default("pending") // "pending", "active", "cancelled", "expired"
+  startDate       DateTime @default(now())
+  renewalDate     DateTime? // Next renewal date
+  expiryDate      DateTime? // When subscription expires
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  // Relations
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("subscriptions")
+  @@index([userId])
+  @@index([status])
 }
 
 // Chat model - represents a conversation thread
@@ -55,6 +77,7 @@ model Message {
   chatId    String
   role      String   // "user" or "assistant"
   content   String   @db.Text
+  category  String?  // Category/perspective used for this message (Government, NGOs, Agribusinesses, Farmers, Integrated)
   metadata  Json?    // For storing additional data (context type, timestamps, etc.)
   createdAt DateTime @default(now())
 

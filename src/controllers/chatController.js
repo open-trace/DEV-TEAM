@@ -1,4 +1,5 @@
 const chatService = require('../services/chatService');
+const subscriptionService = require('../services/subscriptionService');
 
 /**
  * Get all user's chats
@@ -49,23 +50,38 @@ exports.getChatById = async (req, res) => {
  */
 exports.sendChat = async (req, res) => {
   try {
-    const { message, category } = req.body;
+    const { message, perspective } = req.body;
 
     // Validate message
     if (!message || !message.trim()) {
       return res.status(400).json({ error: 'Message is required' });
     }
 
-    // Validate category if provided (optional)
-    const validCategories = ['Government', 'NGOs', 'Agribusinesses', 'Farmers'];
-    if (category && !validCategories.includes(category)) {
-      return res.status(400).json({ error: 'Invalid category' });
+    // Get user's subscription (check active status and plan type)
+    const subscription = await subscriptionService.getCurrentSubscription(req.user.id);
+    if (!subscription || subscription.status !== 'active') {
+      return res.status(402).json({ error: 'Subscription not active. Please complete payment to access chat.' });
     }
 
-    // Send message to AI and save chat
-    const chat = await chatService.sendMessage(req.user.id, message, category);
+    // If perspective provided, check that user is Integrated subscriber
+    if (perspective) {
+      if (subscription.planType !== 'Integrated') {
+        return res.status(403).json({ error: 'Perspective override is only available for Integrated subscribers' });
+      }
+
+      const validPerspectives = ['Government', 'NGOs', 'Agribusinesses', 'Farmers', 'Integrated'];
+      if (!validPerspectives.includes(perspective)) {
+        return res.status(400).json({ error: 'Invalid perspective' });
+      }
+    }
+
+    // Send message to AI and save chat (category auto-determined from subscription)
+    const chat = await chatService.sendMessage(req.user.id, message, perspective);
     res.status(201).json(chat);
   } catch (error) {
+    if (error.message.toLowerCase().includes('subscription')) {
+      return res.status(402).json({ error: error.message }); // 402 Payment Required
+    }
     console.error('Send chat error:', error);
     res.status(500).json({ error: 'Failed to send message' });
   }
@@ -79,15 +95,33 @@ exports.sendChat = async (req, res) => {
 exports.addMessageToChat = async (req, res) => {
   try {
     const { id } = req.params;
-    const { message } = req.body;
+    const { message, perspective } = req.body;
 
     // Validate message
-    if (!message || !message.trim()) {
+    if (!message?.trim()) {
       return res.status(400).json({ error: 'Message is required' });
     }
 
-    // Add message to chat and get AI response
-    const updatedChat = await chatService.addMessageToExistingChat(id, req.user.id, message);
+    // Get user's subscription (check active status and plan type)
+    const subscription = await subscriptionService.getCurrentSubscription(req.user.id);
+    if (!subscription || subscription.status !== 'active') {
+      return res.status(402).json({ error: 'Subscription not active. Please complete payment to access chat.' });
+    }
+
+    // If perspective provided, check that user is Integrated subscriber
+    if (perspective) {
+      if (subscription.planType !== 'Integrated') {
+        return res.status(403).json({ error: 'Perspective override is only available for Integrated subscribers' });
+      }
+
+      const validPerspectives = ['Government', 'NGOs', 'Agribusinesses', 'Farmers', 'Integrated'];
+      if (!validPerspectives.includes(perspective)) {
+        return res.status(400).json({ error: 'Invalid perspective' });
+      }
+    }
+
+    // Add message to chat and get AI response (category auto-determined from subscription)
+    const updatedChat = await chatService.addMessageToExistingChat(id, req.user.id, message, perspective);
 
     if (!updatedChat) {
       return res.status(404).json({ error: 'Chat not found' });
@@ -95,6 +129,9 @@ exports.addMessageToChat = async (req, res) => {
 
     res.status(200).json(updatedChat);
   } catch (error) {
+    if (error.message.toLowerCase().includes('subscription')) {
+      return res.status(402).json({ error: error.message }); // 402 Payment Required
+    }
     console.error('Add message to chat error:', error);
     res.status(500).json({ error: 'Failed to add message' });
   }

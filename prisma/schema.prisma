@@ -31,19 +31,24 @@ model User {
 
 // Subscription model - user subscription plans
 model Subscription {
-  id              String   @id @default(cuid())
-  userId          String   @unique
-  planType        String   // "Government", "NGOs", "Agribusinesses", "Farmers", "Integrated"
-  price           Float    // Price per month
-  status          String   @default("pending") // "pending", "active", "cancelled", "expired"
-  startDate       DateTime @default(now())
-  renewalDate     DateTime? // Next renewal date
-  expiryDate      DateTime? // When subscription expires
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  id                    String   @id @default(cuid())
+  userId                String   @unique
+  planType              String   // "Government", "NGOs", "Agribusinesses", "Farmers", "Integrated"
+  price                 Float    // Price per month
+  status                String   @default("pending") // "pending", "active", "cancelled", "expired"
+  startDate             DateTime @default(now())
+  renewalDate           DateTime? // Next renewal date
+  expiryDate            DateTime? // When subscription expires
+
+  // Stripe integration fields
+  stripeCustomerId      String?  @unique // Stripe customer ID
+  stripeSubscriptionId  String?  @unique // Stripe subscription ID (for recurring charges)
+
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
 
   // Relations
-  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user                  User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@map("subscriptions")
   @@index([userId])

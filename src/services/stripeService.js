@@ -243,6 +243,11 @@ exports.confirmPayment = async (userId, paymentIntentId) => {
       throw new Error(`Payment not successful: ${paymentIntent.status}`);
     }
 
+    // Check if subscription is still pending (prevent race condition with webhook)
+    if (subscription.status !== 'pending') {
+      throw new Error('Subscription already activated by webhook');
+    }
+
     // Update subscription status to active
     const updatedSubscription = await prisma.subscription.update({
       where: { userId },

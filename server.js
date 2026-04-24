@@ -18,6 +18,9 @@ const app = express();
 app.use(helmet());
 app.use(cors());
 
+// cPanel/Apache usually sits in front of Node and forwards the client IP.
+app.set('trust proxy', process.env.TRUST_PROXY || 1);
+
 // Rate limiting
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes

@@ -57,7 +57,7 @@ const sendVerificationEmail = async ({ toEmail, name, verificationToken }) => {
   const fromEmail =
     process.env.MAIL_FROM || "OpenTrace <no-reply@opentrace.local>";
 
-  const verificationUrl = `${appBaseUrl}/api/auth/verify-email?token=${encodeURIComponent(verificationToken)}`;
+  const verificationUrl = `https://www.askadza.com/verify-email?token=${encodeURIComponent(verificationToken)}`;
 
   const info = await transporter.sendMail({
     from: fromEmail,

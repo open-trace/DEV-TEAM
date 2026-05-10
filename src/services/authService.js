@@ -2,7 +2,7 @@ const bcrypt = require('bcryptjs');
 const { PrismaClient } = require('@prisma/client');
 const { generateToken, generateVerificationToken, getVerificationTokenExpiry } = require('../utils/tokenUtils');
 const { isValidEmail, isValidPassword, isValidName } = require('../utils/validators');
-const { sendVerificationEmail } = require('./emailService');
+const { sendVerificationEmail, sendPasswordResetEmail } = require('./emailService');
 
 const prisma = new PrismaClient();
 
@@ -349,11 +349,125 @@ const resendVerificationEmail = async (email) => {
   }
 };
 
+/**
+ * Request password reset for user
+ * @param {string} email - User email
+ * @returns {object} { success, message }
+ */
+const requestPasswordReset = async (email) => {
+  try {
+    if (!email) {
+      return { success: false, message: 'Email is required' };
+    }
+
+    const normalizedEmail = email.toLowerCase();
+
+    const user = await prisma.user.findUnique({
+      where: { email: normalizedEmail }
+    });
+
+    // Generic response to avoid exposing account existence
+    if (!user) {
+      return { success: true, message: 'If the email exists, a password reset link has been sent.' };
+    }
+
+    // Generate reset token and expiry (1 hour)
+    const resetToken = generateVerificationToken();
+    const resetExpiry = new Date();
+    resetExpiry.setHours(resetExpiry.getHours() + 1);
+
+    // Save token to database
+    await prisma.user.update({
+      where: { id: user.id },
+      data: {
+        passwordResetToken: resetToken,
+        passwordResetExpires: resetExpiry
+      }
+    });
+
+    // Send password reset email
+    try {
+      await sendPasswordResetEmail({
+        toEmail: user.email,
+        name: user.name,
+        resetToken: resetToken
+      });
+    } catch (emailError) {
+      console.error('Failed to send password reset email:', emailError);
+      return { success: false, message: 'Could not send reset email. Please try again.' };
+    }
+
+    return { success: true, message: 'If the email exists, a password reset link has been sent.' };
+  } catch (error) {
+    console.error('Password reset request error:', error);
+    return { success: false, message: 'Password reset request failed. Please try again.' };
+  }
+};
+
+/**
+ * Reset user password with token
+ * @param {string} resetToken - Reset token from email
+ * @param {string} newPassword - New password
+ * @returns {object} { success, message }
+ */
+const resetUserPassword = async (resetToken, newPassword) => {
+  try {
+    if (!resetToken) {
+      return { success: false, message: 'Reset token is required' };
+    }
+
+    if (!newPassword) {
+      return { success: false, message: 'New password is required' };
+    }
+
+    // Validate password
+    const passwordValidation = isValidPassword(newPassword);
+    if (!passwordValidation.isValid) {
+      return { success: false, message: passwordValidation.message };
+    }
+
+    // Find user by reset token
+    const user = await prisma.user.findUnique({
+      where: { passwordResetToken: resetToken }
+    });
+
+    if (!user) {
+      return { success: false, message: 'Invalid or expired reset link' };
+    }
+
+    // Check if token has expired
+    if (!user.passwordResetExpires || user.passwordResetExpires < new Date()) {
+      return { success: false, message: 'Reset link has expired. Please request a new one.' };
+    }
+
+    // Hash new password
+    const salt = await bcrypt.genSalt(10);
+    const hashedPassword = await bcrypt.hash(newPassword, salt);
+
+    // Update password and clear reset token
+    await prisma.user.update({
+      where: { id: user.id },
+      data: {
+        password: hashedPassword,
+        passwordResetToken: null,
+        passwordResetExpires: null
+      }
+    });
+
+    return { success: true, message: 'Password has been reset successfully. You can now log in with your new password.' };
+  } catch (error) {
+    console.error('Password reset error:', error);
+    return { success: false, message: 'Password reset failed. Please try again.' };
+  }
+};
+
 module.exports = {
   registerUser,
   loginUser,
   updateUser,
   deleteUser,
   verifyEmail,
-  resendVerificationEmail
+  resendVerificationEmail,
+  requestPasswordReset,
+  resetUserPassword
 };

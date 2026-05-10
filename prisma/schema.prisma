@@ -18,6 +18,8 @@ model User {
   emailVerified            Boolean   @default(false)
   emailVerificationToken   String?   @unique
   emailVerificationExpires DateTime?
+  passwordResetToken       String?   @unique
+  passwordResetExpires     DateTime?
   settings                 Json      @default("{\"theme\":\"light\",\"notifications\":true,\"chatHistoryEnabled\":true,\"language\":\"en\",\"modelTemperature\":0.7,\"exportFormat\":\"json\"}")
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

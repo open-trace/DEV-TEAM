@@ -35,8 +35,13 @@ exports.selectPlan = async (req, res) => {
       planType.trim(),
     );
 
+    const message =
+      subscription.planType === "Free" && subscription.status === "active"
+        ? "Free plan activated successfully."
+        : "Plan selected successfully. Please complete payment.";
+
     res.status(201).json({
-      message: "Plan selected successfully. Please complete payment.",
+      message,
       subscription,
     });
   } catch (error) {
@@ -46,8 +51,10 @@ exports.selectPlan = async (req, res) => {
     if (error.message.includes("Use switchPlan")) {
       return res.status(400).json({ error: error.message });
     }
-    console.error("Select plan error:", error);
-    res.status(500).json({ error: "Failed to select plan" });
+    console.error("Select plan error - Full error:", error);
+    console.error("Select plan error - Message:", error.message);
+    console.error("Select plan error - Stack:", error.stack);
+    res.status(500).json({ error: "Failed to select plan", details: error.message });
   }
 };
 

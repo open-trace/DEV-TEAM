@@ -35,12 +35,15 @@ model User {
 model Subscription {
   id                    String   @id @default(cuid())
   userId                String   @unique
-  planType              String   // "Government", "NGOs", "Agribusinesses", "Farmers", "Integrated"
+  planType              String   // "Free", "Farmers", "Government", "NGOs", "Agribusinesses", "Integrated"
   price                 Float    // Price per month
-  status                String   @default("pending") // "pending", "active", "cancelled", "expired"
+  status                String   @default("pending") // "pending", "active", "past_due", "cancelled", "expired"
   startDate             DateTime @default(now())
   renewalDate           DateTime? // Next renewal date
   expiryDate            DateTime? // When subscription expires
+  queriesPerMonth       Int?     // null = unlimited (Integrated plan)
+  queriesUsedThisMonth  Int      @default(0) // Tracks query usage for current month
+  monthResetDate        DateTime? // When query counter resets to 0
 
   // Stripe integration fields
   stripeCustomerId      String?  @unique // Stripe customer ID

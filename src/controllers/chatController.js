@@ -9,7 +9,7 @@ const subscriptionService = require('../services/subscriptionService');
 exports.getAllChats = async (req, res) => {
   try {
     // Get includeArchived query param (defaults to true if not specified)
-    const includeArchived = req.query.includeArchived !== 'false'; 
+    const includeArchived = req.query.includeArchived !== 'false';
 
     // Get all chats for the authenticated user
     const chats = await chatService.getUserChats(req.user.id, includeArchived);
@@ -59,24 +59,43 @@ exports.sendChat = async (req, res) => {
 
     // Get user's subscription (check active status and plan type)
     const subscription = await subscriptionService.getCurrentSubscription(req.user.id);
-    if (!subscription || subscription.status !== 'active') {
+    if (!subscription || (subscription.status !== 'active' && subscription.status !== 'past_due')) {
       return res.status(402).json({ error: 'Subscription not active. Please complete payment to access chat.' });
     }
 
-    // If perspective provided, check that user is Integrated subscriber
-    if (perspective) {
-      if (subscription.planType !== 'Integrated') {
-        return res.status(403).json({ error: 'Perspective override is only available for Integrated subscribers' });
-      }
+    // Check query limit BEFORE processing request
+    const queryLimitCheck = await subscriptionService.checkQueryLimit(req.user.id);
+    if (!queryLimitCheck.hasQueries) {
+      return res.status(429).json({
+        error: queryLimitCheck.message,
+        queriesRemaining: queryLimitCheck.queriesRemaining
+      });
+    }
 
-      const validPerspectives = ['Government', 'NGOs', 'Agribusinesses', 'Farmers', 'Integrated'];
-      if (!validPerspectives.includes(perspective)) {
-        return res.status(400).json({ error: 'Invalid perspective' });
+    // If perspective provided, validate based on subscription type
+    if (perspective) {
+      // Free and Integrated users can choose any perspective
+      if (subscription.planType === 'Free' || subscription.planType === 'Integrated') {
+        const validPerspectives = ['Government', 'NGOs', 'Agribusinesses', 'Farmers'];
+        if (!validPerspectives.includes(perspective)) {
+          return res.status(400).json({ error: 'Invalid perspective' });
+        }
+      } else {
+        // Paid single-perspective users (Farmers, Government, NGOs, Agribusinesses) can only use their own perspective
+        if (subscription.planType !== perspective) {
+          return res.status(403).json({
+            error: `Your ${subscription.planType} plan only includes access to the ${subscription.planType} perspective. Upgrade to Integrated to access other perspectives.`
+          });
+        }
       }
     }
 
     // Send message to AI and save chat (category auto-determined from subscription)
     const chat = await chatService.sendMessage(req.user.id, message, perspective);
+
+    // Increment query usage AFTER request succeeds
+    await subscriptionService.incrementQueryUsage(req.user.id);
+
     res.status(201).json(chat);
   } catch (error) {
     if (error.message.toLowerCase().includes('subscription')) {
@@ -104,20 +123,35 @@ exports.addMessageToChat = async (req, res) => {
 
     // Get user's subscription (check active status and plan type)
     const subscription = await subscriptionService.getCurrentSubscription(req.user.id);
-    if (!subscription || subscription.status !== 'active') {
+    if (!subscription || (subscription.status !== 'active' && subscription.status !== 'past_due')) {
       return res.status(402).json({ error: 'Subscription not active. Please complete payment to access chat.' });
     }
 
-    // If perspective provided, check that user is Integrated subscriber
+    // If perspective provided, validate based on subscription type
     if (perspective) {
-      if (subscription.planType !== 'Integrated') {
-        return res.status(403).json({ error: 'Perspective override is only available for Integrated subscribers' });
+      // Free and Integrated users can choose any perspective
+      if (subscription.planType === 'Free' || subscription.planType === 'Integrated') {
+        const validPerspectives = ['Government', 'NGOs', 'Agribusinesses', 'Farmers'];
+        if (!validPerspectives.includes(perspective)) {
+          return res.status(400).json({ error: 'Invalid perspective' });
+        }
+      } else {
+        // Paid single-perspective users (Farmers, Government, NGOs, Agribusinesses) can only use their own perspective
+        if (subscription.planType !== perspective) {
+          return res.status(403).json({
+            error: `Your ${subscription.planType} plan only includes access to the ${subscription.planType} perspective. Upgrade to Integrated to access other perspectives.`
+          });
+        }
       }
+    }
 
-      const validPerspectives = ['Government', 'NGOs', 'Agribusinesses', 'Farmers', 'Integrated'];
-      if (!validPerspectives.includes(perspective)) {
-        return res.status(400).json({ error: 'Invalid perspective' });
-      }
+    // Check query limit BEFORE processing request
+    const queryLimitCheck = await subscriptionService.checkQueryLimit(req.user.id);
+    if (!queryLimitCheck.hasQueries) {
+      return res.status(429).json({
+        error: queryLimitCheck.message,
+        queriesRemaining: queryLimitCheck.queriesRemaining
+      });
     }
 
     // Add message to chat and get AI response (category auto-determined from subscription)
@@ -126,6 +160,9 @@ exports.addMessageToChat = async (req, res) => {
     if (!updatedChat) {
       return res.status(404).json({ error: 'Chat not found' });
     }
+
+    // Increment query usage AFTER request succeeds
+    await subscriptionService.incrementQueryUsage(req.user.id);
 
     res.status(200).json(updatedChat);
   } catch (error) {

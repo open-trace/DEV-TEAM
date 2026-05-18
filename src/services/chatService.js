@@ -59,7 +59,7 @@ exports.getChatWithMessages = async (chatId, userId) => {
  * Send a message in a chat and get AI response
  * @param {string} userId - User's ID
  * @param {string} message - User's message
- * @param {string|undefined} perspective - Optional perspective for Integrated users (Government, NGOs, Agribusinesses, Farmers, Integrated)
+ * @param {string|undefined} perspective - Optional perspective for Free and Integrated users (Government, NGOs, Agribusinesses, Farmers)
  * @returns {object} Chat with messages
  */
 exports.sendMessage = async (userId, message, perspective = null) => {
@@ -76,15 +76,17 @@ exports.sendMessage = async (userId, message, perspective = null) => {
   }
 
   // Determine category based on subscription plan
-  let category = subscription.planType; // Government, NGOs, Agribusinesses, Farmers, or Integrated
+  let category = subscription.planType;
 
-  // For Integrated users, allow optional perspective parameter
-  if (subscription.planType === 'Integrated' && perspective) {
-    const validPerspectives = ['Government', 'NGOs', 'Agribusinesses', 'Farmers', 'Integrated'];
-    if (!validPerspectives.includes(perspective)) {
-      throw new Error(`Invalid perspective: ${perspective}`);
+  // For Free and Integrated users, allow optional perspective parameter or default to Government
+  if (subscription.planType === 'Free' || subscription.planType === 'Integrated') {
+    const validPerspectives = ['Government', 'NGOs', 'Agribusinesses', 'Farmers'];
+    const selectedPerspective = perspective || 'Government'; // Default to Government if not specified
+
+    if (!validPerspectives.includes(selectedPerspective)) {
+      throw new Error(`Invalid perspective: ${selectedPerspective}`);
     }
-    category = perspective;
+    category = selectedPerspective;
   }
 
   // Get AI response (pass category so AI knows the perspective)
@@ -135,7 +137,7 @@ exports.sendMessage = async (userId, message, perspective = null) => {
  * @param {string} chatId - Chat's ID
  * @param {string} userId - User's ID (for authorization)
  * @param {string} message - User's message
- * @param {string|undefined} perspective - Optional perspective for Integrated users
+ * @param {string|undefined} perspective - Optional perspective for Free and Integrated users
  * @returns {object} Updated chat with all messages
  */
 exports.addMessageToExistingChat = async (chatId, userId, message, perspective = null) => {
@@ -157,14 +159,19 @@ exports.addMessageToExistingChat = async (chatId, userId, message, perspective =
     return null; // Chat not found or unauthorized
   }
 
-  // Get subscription to check if user is Integrated
+  // Get subscription to check plan type
   const subscription = await subscriptionService.getCurrentSubscription(userId);
 
-  // For Integrated users, allow perspective override; otherwise use chat's existing category
+  // For Free and Integrated users, allow perspective override; otherwise keep the chat's existing category
   let responseCategory = chat.category;
-  if (subscription && subscription.planType === 'Integrated' && perspective) {
-    const validPerspectives = ['Government', 'NGOs', 'Agribusinesses', 'Farmers', 'Integrated'];
-    if (validPerspectives.includes(perspective)) {
+  if (subscription && (subscription.planType === 'Free' || subscription.planType === 'Integrated')) {
+    const validPerspectives = ['Government', 'NGOs', 'Agribusinesses', 'Farmers'];
+
+    if (perspective) {
+      if (!validPerspectives.includes(perspective)) {
+        throw new Error(`Invalid perspective: ${perspective}`);
+      }
+
       responseCategory = perspective;
     }
   }

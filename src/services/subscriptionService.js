@@ -1,5 +1,83 @@
 const prisma = require("../utils/prismaClient");
 
+const BILLING_FREQUENCIES = {
+  monthly: {
+    label: "Monthly",
+    interval: "month",
+    intervalCount: 1,
+    billingPeriodMonths: 1,
+    discountPercent: 0,
+    discountLabel: "no discount",
+  },
+  quarterly: {
+    label: "Quarterly",
+    interval: "month",
+    intervalCount: 3,
+    billingPeriodMonths: 3,
+    discountPercent: 10,
+    discountLabel: "save 10%",
+  },
+  yearly: {
+    label: "Yearly",
+    interval: "year",
+    intervalCount: 1,
+    billingPeriodMonths: 12,
+    discountPercent: 16.67,
+    discountLabel: "2 months free (~17%)",
+    freeMonths: 2,
+  },
+};
+
+const DEFAULT_BILLING_FREQUENCY = "monthly";
+
+const roundCurrency = (amount) =>
+  Number((Math.round(amount * 100 + 1e-6) / 100).toFixed(2));
+
+const buildBillingOption = (billingFrequency, price, equivalentMonthlyPrice) => ({
+  billingFrequency,
+  ...BILLING_FREQUENCIES[billingFrequency],
+  price,
+  equivalentMonthlyPrice,
+});
+
+const buildBillingOptions = (monthlyPrice) => {
+  const monthly = buildBillingOption("monthly", monthlyPrice, monthlyPrice);
+
+  if (monthlyPrice === 0) {
+    return [monthly];
+  }
+
+  const quarterlyPrice = roundCurrency(monthlyPrice * 3 * 0.9);
+  const yearlyPrice = roundCurrency(monthlyPrice * 10);
+
+  return [
+    monthly,
+    buildBillingOption("quarterly", quarterlyPrice, roundCurrency(quarterlyPrice / 3)),
+    buildBillingOption("yearly", yearlyPrice, roundCurrency(yearlyPrice / 12)),
+  ];
+};
+
+const normalizeBillingFrequency = (billingFrequency = DEFAULT_BILLING_FREQUENCY) => {
+  if (!billingFrequency) {
+    return DEFAULT_BILLING_FREQUENCY;
+  }
+
+  return String(billingFrequency).trim().toLowerCase();
+};
+
+const getBillingOptionForPlan = (planConfig, billingFrequency) => {
+  const normalizedBillingFrequency = normalizeBillingFrequency(billingFrequency);
+  const billingOption = buildBillingOptions(planConfig.price).find(
+    (option) => option.billingFrequency === normalizedBillingFrequency,
+  );
+
+  if (!billingOption) {
+    throw new Error(`Invalid billing frequency: ${billingFrequency}`);
+  }
+
+  return billingOption;
+};
+
 /**
  * Available subscription plans with pricing
  */
@@ -69,7 +147,7 @@ const SUBSCRIPTION_PLANS = {
   },
   Integrated: {
     name: "Integrated Account",
-    price: 49.99,
+    price: 39.99,
     queriesPerMonth: null, // unlimited
     description: "Full cross-sector access for consultants, researchers, and teams working across multiple stakeholder lenses.",
     features: [
@@ -81,9 +159,31 @@ const SUBSCRIPTION_PLANS = {
   },
 };
 
-exports.getPlanConfig = (planType) => SUBSCRIPTION_PLANS[planType] || null;
+exports.getPlanConfig = (planType) => {
+  const plan = SUBSCRIPTION_PLANS[planType];
+
+  if (!plan) {
+    return null;
+  }
+
+  return {
+    ...plan,
+    monthlyPrice: plan.price,
+    billingOptions: buildBillingOptions(plan.price),
+  };
+};
 
 exports.getPlanPrice = (planType) => SUBSCRIPTION_PLANS[planType]?.price ?? null;
+
+exports.getBillingOption = (planType, billingFrequency) => {
+  const planConfig = SUBSCRIPTION_PLANS[planType];
+
+  if (!planConfig) {
+    return null;
+  }
+
+  return getBillingOptionForPlan(planConfig, billingFrequency);
+};
 
 /**
  * Get all available subscription plans
@@ -94,6 +194,8 @@ exports.getPlans = async () => {
     id: key,
     name: value.name,
     price: value.price,
+    monthlyPrice: value.price,
+    billingOptions: buildBillingOptions(value.price),
     queriesPerMonth: value.queriesPerMonth,
     description: value.description,
     features: value.features,
@@ -116,15 +218,17 @@ exports.getNextMonthResetDate = getNextMonthResetDate;
  * Select a subscription plan for a user
  * @param {string} userId - User's ID
  * @param {string} planType - Plan type (Free, Farmers, Government, NGOs, Agribusinesses, Integrated)
+ * @param {string} billingFrequency - Billing frequency (monthly, quarterly, yearly)
  * @returns {object} Created or updated subscription
  */
-exports.selectPlan = async (userId, planType) => {
+exports.selectPlan = async (userId, planType, billingFrequency = DEFAULT_BILLING_FREQUENCY) => {
   // Validate plan type
   if (!SUBSCRIPTION_PLANS[planType]) {
     throw new Error(`Invalid plan type: ${planType}`);
   }
 
   const planConfig = SUBSCRIPTION_PLANS[planType];
+  const billingOption = getBillingOptionForPlan(planConfig, billingFrequency);
   const isFreeplan = planType === "Free";
   const monthResetDate = getNextMonthResetDate();
 
@@ -139,7 +243,8 @@ exports.selectPlan = async (userId, planType) => {
       where: { userId },
       data: {
         planType,
-        price: planConfig.price,
+        billingFrequency: billingOption.billingFrequency,
+        price: billingOption.price,
         queriesPerMonth: planConfig.queriesPerMonth,
         queriesUsedThisMonth: 0,
         monthResetDate: monthResetDate,
@@ -171,7 +276,8 @@ exports.selectPlan = async (userId, planType) => {
       where: { userId },
       data: {
         planType,
-        price: planConfig.price,
+        billingFrequency: billingOption.billingFrequency,
+        price: billingOption.price,
         queriesPerMonth: planConfig.queriesPerMonth,
         queriesUsedThisMonth: 0,
         monthResetDate: monthResetDate,
@@ -185,7 +291,8 @@ exports.selectPlan = async (userId, planType) => {
   const subscriptionData = {
     userId,
     planType,
-    price: planConfig.price,
+    billingFrequency: billingOption.billingFrequency,
+    price: billingOption.price,
     queriesPerMonth: planConfig.queriesPerMonth,
     queriesUsedThisMonth: 0,
     monthResetDate: monthResetDate,
@@ -215,11 +322,21 @@ exports.getCurrentSubscription = async (userId) => {
 
   // Include plan details
   const planDetails = SUBSCRIPTION_PLANS[subscription.planType];
+  const billingOptions = buildBillingOptions(planDetails.price);
+  const billingOption =
+    billingOptions.find(
+      (option) =>
+        option.billingFrequency ===
+        normalizeBillingFrequency(subscription.billingFrequency),
+    ) || billingOptions[0];
 
   return {
     ...subscription,
     planName: planDetails.name,
     planDescription: planDetails.description,
+    monthlyPrice: planDetails.price,
+    billingOption,
+    billingOptions,
     isActive: subscription.status === "active" || subscription.status === "past_due",
   };
 };

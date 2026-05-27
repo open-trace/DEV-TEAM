@@ -23,7 +23,8 @@ exports.createPaymentIntent = async (req, res) => {
       req.user.id,
       req.user.email,
       subscription.planType,
-      subscription.price
+      subscription.price,
+      subscription.billingFrequency
     );
 
     res.status(200).json({
@@ -88,16 +89,21 @@ exports.cancelSubscription = async (req, res) => {
  */
 exports.upgradeSubscription = async (req, res) => {
   try {
-    const { planType } = req.body;
+    const { planType, billingFrequency } = req.body;
 
-    if (!planType) {
+    if (typeof planType !== 'string' || !planType.trim()) {
       return res.status(400).json({ error: 'planType is required' });
+    }
+
+    if (billingFrequency !== undefined && typeof billingFrequency !== 'string') {
+      return res.status(400).json({ error: 'billingFrequency must be a string' });
     }
 
     // Upgrade subscription
     const result = await stripeService.upgradeSubscription(
       req.user.id,
-      planType
+      planType.trim(),
+      billingFrequency?.trim()
     );
 
     if (result.status === 'pending_payment') {

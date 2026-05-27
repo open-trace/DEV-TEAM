@@ -22,17 +22,22 @@ exports.getPlans = async (req, res) => {
  */
 exports.selectPlan = async (req, res) => {
   try {
-    const { planType } = req.body;
+    const { planType, billingFrequency } = req.body;
 
     // Validate planType
-    if (!planType || !planType.trim()) {
+    if (typeof planType !== "string" || !planType.trim()) {
       return res.status(400).json({ error: "Plan type is required" });
+    }
+
+    if (billingFrequency !== undefined && typeof billingFrequency !== "string") {
+      return res.status(400).json({ error: "Billing frequency must be a string" });
     }
 
     // Select plan
     const subscription = await subscriptionService.selectPlan(
       req.user.id,
       planType.trim(),
+      billingFrequency?.trim(),
     );
 
     const message =
@@ -46,6 +51,9 @@ exports.selectPlan = async (req, res) => {
     });
   } catch (error) {
     if (error.message.includes("Invalid plan type")) {
+      return res.status(400).json({ error: error.message });
+    }
+    if (error.message.includes("Invalid billing frequency")) {
       return res.status(400).json({ error: error.message });
     }
     if (error.message.includes("Use switchPlan")) {

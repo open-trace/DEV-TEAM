@@ -36,7 +36,8 @@ model Subscription {
   id                    String   @id @default(cuid())
   userId                String   @unique
   planType              String   // "Free", "Farmers", "Government", "NGOs", "Agribusinesses", "Integrated"
-  price                 Float    // Price per month
+  billingFrequency      String   @default("monthly") // "monthly", "quarterly", "yearly"
+  price                 Float    // Amount charged for the selected billing frequency
   status                String   @default("pending") // "pending", "active", "past_due", "cancelled", "expired"
   startDate             DateTime @default(now())
   renewalDate           DateTime? // Next renewal date

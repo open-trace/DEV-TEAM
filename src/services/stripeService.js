@@ -4,6 +4,16 @@ const subscriptionService = require('./subscriptionService');
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+const DEFAULT_BILLING_FREQUENCY = 'monthly';
+
+const getStripeUnitAmount = (price) => Math.round(Number(price) * 100);
+
+const getFallbackRenewalDate = (billingOption) => {
+  const renewalDate = new Date();
+  renewalDate.setMonth(renewalDate.getMonth() + billingOption.billingPeriodMonths);
+  return renewalDate;
+};
+
 const derivePaymentIntentIdFromClientSecret = (clientSecret) => {
   if (!clientSecret || typeof clientSecret !== 'string') {
     return null;
@@ -81,6 +91,100 @@ const waitForSubscriptionPaymentDetails = async (stripeSubscriptionId, maxAttemp
   return null;
 };
 
+const getBillingFrequencyFromPrice = (price) => {
+  const metadataFrequency = price?.metadata?.billingFrequency;
+  if (metadataFrequency) {
+    return String(metadataFrequency).trim().toLowerCase();
+  }
+
+  const interval = price?.recurring?.interval;
+  const intervalCount = price?.recurring?.interval_count || 1;
+
+  if (interval === 'month' && intervalCount === 3) {
+    return 'quarterly';
+  }
+
+  if (interval === 'year' && intervalCount === 1) {
+    return 'yearly';
+  }
+
+  return DEFAULT_BILLING_FREQUENCY;
+};
+
+const getBillingOptionForStripe = (planType, billingFrequency, priceOverride = null) => {
+  const billingOption = subscriptionService.getBillingOption(planType, billingFrequency);
+
+  if (!billingOption) {
+    throw new Error(`Invalid plan type: ${planType}`);
+  }
+
+  return {
+    ...billingOption,
+    price: typeof priceOverride === 'number' ? priceOverride : billingOption.price
+  };
+};
+
+const getOrCreateStripeProduct = async (planType) => {
+  const products = await stripe.products.list({ limit: 100 });
+  let product = products.data.find(p => p.metadata?.planType === planType);
+
+  if (!product) {
+    product = await stripe.products.create({
+      name: `Ask ADZA - ${planType} Plan`,
+      description: `${planType} subscription for Ask ADZA`,
+      metadata: { planType }
+    });
+  }
+
+  return product;
+};
+
+const stripePriceMatchesBillingOption = (price, billingOption) => {
+  const intervalCount = price.recurring?.interval_count || 1;
+
+  return (
+    price.unit_amount === getStripeUnitAmount(billingOption.price) &&
+    price.currency === 'usd' &&
+    price.recurring?.interval === billingOption.interval &&
+    intervalCount === billingOption.intervalCount
+  );
+};
+
+const getOrCreateStripePrice = async (planType, billingOption) => {
+  const product = await getOrCreateStripeProduct(planType);
+
+  const prices = await stripe.prices.list({
+    product: product.id,
+    active: true,
+    limit: 100
+  });
+
+  const existingPrice = prices.data.find(price =>
+    stripePriceMatchesBillingOption(price, billingOption)
+  );
+
+  if (existingPrice) {
+    return existingPrice.id;
+  }
+
+  const price = await stripe.prices.create({
+    product: product.id,
+    unit_amount: getStripeUnitAmount(billingOption.price),
+    currency: 'usd',
+    recurring: {
+      interval: billingOption.interval,
+      interval_count: billingOption.intervalCount
+    },
+    metadata: {
+      planType,
+      billingFrequency: billingOption.billingFrequency,
+      billingPeriodMonths: String(billingOption.billingPeriodMonths)
+    }
+  });
+
+  return price.id;
+};
+
 const getSubscriptionPlanDetails = async (stripeSubscription) => {
   const subscriptionItem = stripeSubscription?.items?.data?.[0];
   const priceRef = subscriptionItem?.price;
@@ -106,6 +210,7 @@ const getSubscriptionPlanDetails = async (stripeSubscription) => {
 
   return {
     planType,
+    billingFrequency: getBillingFrequencyFromPrice(price),
     price: typeof price.unit_amount === 'number' ? price.unit_amount / 100 : null
   };
 };
@@ -127,15 +232,21 @@ const activateSubscriptionFromStripePlan = async (subscription, stripeSubscripti
     throw new Error(`Invalid plan type from Stripe: ${planDetails.planType}`);
   }
 
+  const billingOption = getBillingOptionForStripe(
+    planDetails.planType,
+    planDetails.billingFrequency || DEFAULT_BILLING_FREQUENCY
+  );
+
   const renewalDate = stripeSubscription.current_period_end
     ? new Date(stripeSubscription.current_period_end * 1000)
-    : new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+    : getFallbackRenewalDate(billingOption);
 
   return prisma.subscription.update({
     where: { id: subscription.id },
     data: {
       planType: planDetails.planType,
-      price: planDetails.price ?? planConfig.price,
+      billingFrequency: billingOption.billingFrequency,
+      price: planDetails.price ?? billingOption.price,
       status: 'active',
       startDate: new Date(),
       renewalDate,
@@ -152,11 +263,20 @@ const activateSubscriptionFromStripePlan = async (subscription, stripeSubscripti
  * @param {string} userId - User ID
  * @param {string} userEmail - User email
  * @param {string} planType - Subscription plan type
- * @param {number} price - Plan price in dollars
+ * @param {number} price - Selected billing period price in dollars
+ * @param {string} billingFrequency - Billing frequency (monthly, quarterly, yearly)
  * @returns {object} Stripe subscription and payment intent details
  */
-exports.createPaymentIntent = async (userId, userEmail, planType, price) => {
+exports.createPaymentIntent = async (
+  userId,
+  userEmail,
+  planType,
+  price,
+  billingFrequency = DEFAULT_BILLING_FREQUENCY
+) => {
   try {
+    const billingOption = getBillingOptionForStripe(planType, billingFrequency, price);
+
     // Create or get Stripe customer
     let stripeCustomerId;
     const subscription = await prisma.subscription.findUnique({
@@ -172,47 +292,14 @@ exports.createPaymentIntent = async (userId, userEmail, planType, price) => {
         email: userEmail,
         metadata: {
           userId,
-          planType
+          planType,
+          billingFrequency: billingOption.billingFrequency
         }
       });
       stripeCustomerId = customer.id;
     }
 
-    // Create product and price (if not exists)
-    // In production, these will be created once and reused
-    let priceId;
-    const products = await stripe.products.list({ limit: 100 });
-    let product = products.data.find(p => p.metadata?.planType === planType);
-
-    if (!product) {
-      product = await stripe.products.create({
-        name: `Ask ADZA - ${planType} Plan`,
-        description: `${planType} subscription for Ask ADZA`,
-        metadata: { planType }
-      });
-    }
-
-    // Create recurring price
-    const prices = await stripe.prices.list({
-      product: product.id,
-      limit: 100
-    });
-    const existingPrice = prices.data.find(p => p.unit_amount === price * 100);
-
-    if (existingPrice) {
-      priceId = existingPrice.id;
-    } else {
-      const priceObj = await stripe.prices.create({
-        product: product.id,
-        unit_amount: Math.round(price * 100), // Convert to cents
-        currency: 'usd',
-        recurring: {
-          interval: 'month',
-          interval_count: 1
-        }
-      });
-      priceId = priceObj.id;
-    }
+    const priceId = await getOrCreateStripePrice(planType, billingOption);
 
     // Create a new Stripe subscription
     const stripeSubscription = await stripe.subscriptions.create({
@@ -400,16 +487,16 @@ exports.cancelStripeSubscription = async (userId) => {
  * Upgrade or change subscription plan
  * @param {string} userId - User ID
  * @param {string} newPlanType - New plan type
+ * @param {string} billingFrequency - Billing frequency (monthly, quarterly, yearly)
  * @returns {object} Updated subscription or pending payment details
  */
-exports.upgradeSubscription = async (userId, newPlanType) => {
+exports.upgradeSubscription = async (userId, newPlanType, billingFrequency = null) => {
   try {
     const planConfig = subscriptionService.getPlanConfig(newPlanType);
     if (!planConfig) {
       throw new Error(`Invalid plan type: ${newPlanType}`);
     }
 
-    const newPrice = planConfig.price;
     const monthResetDate = subscriptionService.getNextMonthResetDate();
 
     const subscription = await prisma.subscription.findUnique({
@@ -424,8 +511,18 @@ exports.upgradeSubscription = async (userId, newPlanType) => {
       throw new Error('Subscription must be active to upgrade');
     }
 
-    if (subscription.planType === newPlanType) {
-      throw new Error(`You are already on the ${newPlanType} plan`);
+    const billingOption = getBillingOptionForStripe(
+      newPlanType,
+      billingFrequency || subscription.billingFrequency || DEFAULT_BILLING_FREQUENCY
+    );
+    const newPrice = billingOption.price;
+    const currentBillingFrequency = subscription.billingFrequency || DEFAULT_BILLING_FREQUENCY;
+
+    if (
+      subscription.planType === newPlanType &&
+      currentBillingFrequency === billingOption.billingFrequency
+    ) {
+      throw new Error(`You are already on the ${newPlanType} ${billingOption.label} plan`);
     }
 
     // CASE 1: Upgrading FROM Free plan (no stripeSubscriptionId)
@@ -451,45 +548,14 @@ exports.upgradeSubscription = async (userId, newPlanType) => {
           email: userEmail,
           metadata: {
             userId,
-            planType: newPlanType
+            planType: newPlanType,
+            billingFrequency: billingOption.billingFrequency
           }
         });
         stripeCustomerId = customer.id;
       }
 
-      // Get or create product and price
-      let priceId;
-      const products = await stripe.products.list({ limit: 100 });
-      let product = products.data.find(p => p.metadata?.planType === newPlanType);
-
-      if (!product) {
-        product = await stripe.products.create({
-          name: `Ask ADZA - ${newPlanType} Plan`,
-          description: `${newPlanType} subscription for Ask ADZA`,
-          metadata: { planType: newPlanType }
-        });
-      }
-
-      const prices = await stripe.prices.list({
-        product: product.id,
-        limit: 100
-      });
-      const existingPrice = prices.data.find(p => p.unit_amount === newPrice * 100);
-
-      if (existingPrice) {
-        priceId = existingPrice.id;
-      } else {
-        const priceObj = await stripe.prices.create({
-          product: product.id,
-          unit_amount: Math.round(newPrice * 100),
-          currency: 'usd',
-          recurring: {
-            interval: 'month',
-            interval_count: 1
-          }
-        });
-        priceId = priceObj.id;
-      }
+      const priceId = await getOrCreateStripePrice(newPlanType, billingOption);
 
       // Create Stripe subscription
       const stripeSubscription = await stripe.subscriptions.create({
@@ -526,7 +592,9 @@ exports.upgradeSubscription = async (userId, newPlanType) => {
         status: 'pending_payment',
         currentPlanType: subscription.planType,
         currentPrice: subscription.price,
+        currentBillingFrequency,
         pendingPlanType: newPlanType,
+        pendingBillingFrequency: billingOption.billingFrequency,
         pendingPrice: newPrice,
         stripeSubscriptionId,
         clientSecret: paymentDetails.clientSecret,
@@ -536,38 +604,7 @@ exports.upgradeSubscription = async (userId, newPlanType) => {
     }
 
     // CASE 2: Upgrading between Paid plans (has stripeSubscriptionId)
-    const products = await stripe.products.list({ limit: 100 });
-    let product = products.data.find(p => p.metadata?.planType === newPlanType);
-
-    if (!product) {
-      product = await stripe.products.create({
-        name: `Ask ADZA - ${newPlanType} Plan`,
-        description: `${newPlanType} subscription for Ask ADZA`,
-        metadata: { planType: newPlanType }
-      });
-    }
-
-    const prices = await stripe.prices.list({
-      product: product.id,
-      limit: 100
-    });
-    let priceId;
-    const existingPrice = prices.data.find(p => p.unit_amount === newPrice * 100);
-
-    if (existingPrice) {
-      priceId = existingPrice.id;
-    } else {
-      const priceObj = await stripe.prices.create({
-        product: product.id,
-        unit_amount: Math.round(newPrice * 100),
-        currency: 'usd',
-        recurring: {
-          interval: 'month',
-          interval_count: 1
-        }
-      });
-      priceId = priceObj.id;
-    }
+    const priceId = await getOrCreateStripePrice(newPlanType, billingOption);
 
     const currentStripeSubscription = await stripe.subscriptions.retrieve(
       subscription.stripeSubscriptionId
@@ -597,7 +634,9 @@ exports.upgradeSubscription = async (userId, newPlanType) => {
         status: 'pending_payment',
         currentPlanType: subscription.planType,
         currentPrice: subscription.price,
+        currentBillingFrequency,
         pendingPlanType: newPlanType,
+        pendingBillingFrequency: billingOption.billingFrequency,
         pendingPrice: newPrice,
         stripeSubscriptionId: stripeSubscription.id,
         clientSecret: paymentDetails?.clientSecret || null,
@@ -610,6 +649,7 @@ exports.upgradeSubscription = async (userId, newPlanType) => {
       where: { userId },
       data: {
         planType: newPlanType,
+        billingFrequency: billingOption.billingFrequency,
         price: newPrice,
         queriesPerMonth: planConfig.queriesPerMonth,
         queriesUsedThisMonth: 0,
@@ -705,11 +745,16 @@ const handleInvoicePaymentSucceeded = async (event) => {
     return;
   }
 
-  // Update renewal date
+  const stripeSubscription = await stripe.subscriptions.retrieve(invoice.subscription);
+  const renewalDate = stripeSubscription.current_period_end
+    ? new Date(stripeSubscription.current_period_end * 1000)
+    : subscription.renewalDate;
+
+  // Keep query usage on its own monthly reset schedule; renewalDate follows Stripe's billing period.
   await prisma.subscription.update({
     where: { id: subscription.id },
     data: {
-      renewalDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+      renewalDate,
       status: 'active'
     }
   });
@@ -824,6 +869,7 @@ const handleSubscriptionUpdated = async (event) => {
       data: {
         status: 'active',
         planType: planDetails?.planType || subscription.planType,
+        billingFrequency: planDetails?.billingFrequency || subscription.billingFrequency,
         price: planDetails?.price ?? subscription.price,
         expiryDate
       }
@@ -833,6 +879,7 @@ const handleSubscriptionUpdated = async (event) => {
 
   if (planDetails && (
     planDetails.planType !== subscription.planType ||
+    planDetails.billingFrequency !== subscription.billingFrequency ||
     planDetails.price !== subscription.price
   )) {
     // Get query tracking info for the new plan
@@ -843,6 +890,7 @@ const handleSubscriptionUpdated = async (event) => {
       where: { id: subscription.id },
       data: {
         planType: planDetails.planType,
+        billingFrequency: planDetails.billingFrequency || subscription.billingFrequency,
         price: planDetails.price ?? subscription.price,
         status: 'active',
         queriesPerMonth: planConfig ? planConfig.queriesPerMonth : subscription.queriesPerMonth,

@@ -14,6 +14,14 @@ const getFallbackRenewalDate = (billingOption) => {
   return renewalDate;
 };
 
+const getDateFromStripeTimestamp = (timestamp) =>
+  typeof timestamp === 'number' ? new Date(timestamp * 1000) : null;
+
+const getCurrentPeriodEndDate = (stripeSubscription, fallbackDate = null) =>
+  getDateFromStripeTimestamp(stripeSubscription?.items?.data?.[0]?.current_period_end) ||
+  getDateFromStripeTimestamp(stripeSubscription?.current_period_end) ||
+  fallbackDate;
+
 const derivePaymentIntentIdFromClientSecret = (clientSecret) => {
   if (!clientSecret || typeof clientSecret !== 'string') {
     return null;
@@ -237,9 +245,10 @@ const activateSubscriptionFromStripePlan = async (subscription, stripeSubscripti
     planDetails.billingFrequency || DEFAULT_BILLING_FREQUENCY
   );
 
-  const renewalDate = stripeSubscription.current_period_end
-    ? new Date(stripeSubscription.current_period_end * 1000)
-    : getFallbackRenewalDate(billingOption);
+  const renewalDate = getCurrentPeriodEndDate(
+    stripeSubscription,
+    getFallbackRenewalDate(billingOption)
+  );
 
   return prisma.subscription.update({
     where: { id: subscription.id },
@@ -434,12 +443,16 @@ exports.cancelStripeSubscription = async (userId) => {
       };
     }
 
-    const stripeSubscription = await stripe.subscriptions.retrieve(subscription.stripeSubscriptionId);
+    const stripeSubscription = await stripe.subscriptions.retrieve(
+      subscription.stripeSubscriptionId,
+      { expand: ['items.data.price.product'] }
+    );
 
     if (stripeSubscription.cancel_at_period_end) {
-      const currentPeriodEnd = stripeSubscription.current_period_end
-        ? new Date(stripeSubscription.current_period_end * 1000)
-        : subscription.renewalDate;
+      const currentPeriodEnd = getCurrentPeriodEndDate(
+        stripeSubscription,
+        subscription.renewalDate
+      );
 
       await prisma.subscription.update({
         where: { userId },
@@ -458,12 +471,16 @@ exports.cancelStripeSubscription = async (userId) => {
     // Schedule Stripe subscription cancellation for the end of the current billing period
     const scheduledCancellation = await stripe.subscriptions.update(
       subscription.stripeSubscriptionId,
-      { cancel_at_period_end: true }
+      {
+        cancel_at_period_end: true,
+        expand: ['items.data.price.product']
+      }
     );
 
-    const expiresAt = scheduledCancellation.current_period_end
-      ? new Date(scheduledCancellation.current_period_end * 1000)
-      : subscription.renewalDate;
+    const expiresAt = getCurrentPeriodEndDate(
+      scheduledCancellation,
+      subscription.renewalDate
+    );
 
     await prisma.subscription.update({
       where: { userId },
@@ -644,6 +661,15 @@ exports.upgradeSubscription = async (userId, newPlanType, billingFrequency = nul
       };
     }
 
+    const latestStripeSubscription = await stripe.subscriptions.retrieve(
+      stripeSubscription.id,
+      { expand: ['items.data.price.product'] }
+    );
+    const renewalDate = getCurrentPeriodEndDate(
+      latestStripeSubscription,
+      subscription.renewalDate
+    );
+
     // Update local database
     const updatedSubscription = await prisma.subscription.update({
       where: { userId },
@@ -651,6 +677,7 @@ exports.upgradeSubscription = async (userId, newPlanType, billingFrequency = nul
         planType: newPlanType,
         billingFrequency: billingOption.billingFrequency,
         price: newPrice,
+        renewalDate,
         queriesPerMonth: planConfig.queriesPerMonth,
         queriesUsedThisMonth: 0,
         monthResetDate,
@@ -745,10 +772,10 @@ const handleInvoicePaymentSucceeded = async (event) => {
     return;
   }
 
-  const stripeSubscription = await stripe.subscriptions.retrieve(invoice.subscription);
-  const renewalDate = stripeSubscription.current_period_end
-    ? new Date(stripeSubscription.current_period_end * 1000)
-    : subscription.renewalDate;
+  const stripeSubscription = await stripe.subscriptions.retrieve(invoice.subscription, {
+    expand: ['items.data.price.product']
+  });
+  const renewalDate = getCurrentPeriodEndDate(stripeSubscription, subscription.renewalDate);
 
   // Keep query usage on its own monthly reset schedule; renewalDate follows Stripe's billing period.
   await prisma.subscription.update({
@@ -846,8 +873,10 @@ const handleSubscriptionUpdated = async (event) => {
     return;
   }
 
-  const expiryDate = updatedSub.current_period_end
-    ? new Date(updatedSub.current_period_end * 1000)
+  const currentPeriodEnd = getCurrentPeriodEndDate(updatedSub, subscription.renewalDate);
+
+  const expiryDate = currentPeriodEnd
+    ? currentPeriodEnd
     : subscription.expiryDate;
 
   const planDetails = await getSubscriptionPlanDetails(updatedSub);
@@ -871,6 +900,7 @@ const handleSubscriptionUpdated = async (event) => {
         planType: planDetails?.planType || subscription.planType,
         billingFrequency: planDetails?.billingFrequency || subscription.billingFrequency,
         price: planDetails?.price ?? subscription.price,
+        renewalDate: currentPeriodEnd,
         expiryDate
       }
     });
@@ -893,6 +923,7 @@ const handleSubscriptionUpdated = async (event) => {
         billingFrequency: planDetails.billingFrequency || subscription.billingFrequency,
         price: planDetails.price ?? subscription.price,
         status: 'active',
+        renewalDate: currentPeriodEnd,
         queriesPerMonth: planConfig ? planConfig.queriesPerMonth : subscription.queriesPerMonth,
         queriesUsedThisMonth: 0,
         monthResetDate,

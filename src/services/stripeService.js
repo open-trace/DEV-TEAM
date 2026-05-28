@@ -58,6 +58,34 @@ const getInvoicePaymentDetails = (invoice) => {
   };
 };
 
+const getStripeId = (value) => {
+  if (!value) {
+    return null;
+  }
+
+  return typeof value === 'string' ? value : value.id || null;
+};
+
+const getSubscriptionIdFromInvoice = (invoice) => {
+  const subscriptionFromInvoice =
+    getStripeId(invoice?.subscription) ||
+    getStripeId(invoice?.parent?.subscription_details?.subscription);
+
+  if (subscriptionFromInvoice) {
+    return subscriptionFromInvoice;
+  }
+
+  const subscriptionLine = invoice?.lines?.data?.find(
+    (line) => line?.parent?.subscription_item_details?.subscription
+  );
+
+  return getStripeId(subscriptionLine?.parent?.subscription_item_details?.subscription);
+};
+
+const getInvoiceIdFromPaymentIntent = (paymentIntent) =>
+  getStripeId(paymentIntent?.invoice) ||
+  getStripeId(paymentIntent?.payment_details?.order_reference);
+
 const resolvePaymentDetailsFromInvoice = async (invoiceRef) => {
   if (!invoiceRef) {
     return null;
@@ -730,14 +758,23 @@ exports.handleWebhookEvent = async (event) => {
 // Helper: Handle payment_intent.succeeded (initial payment)
 const handlePaymentIntentSucceeded = async (event) => {
   const paymentIntent = event.data.object;
+  let stripeSubscriptionId = getStripeId(paymentIntent.subscription);
 
-  // Only process subscription payments (one-time payments are ignored)
-  if (!paymentIntent.subscription) {
+  if (!stripeSubscriptionId) {
+    const invoiceId = getInvoiceIdFromPaymentIntent(paymentIntent);
+    if (invoiceId) {
+      const invoice = await stripe.invoices.retrieve(invoiceId);
+      stripeSubscriptionId = getSubscriptionIdFromInvoice(invoice);
+    }
+  }
+
+  // Only process subscription payments (one-time payments are ignored).
+  if (!stripeSubscriptionId) {
     return;
   }
 
   const subscription = await prisma.subscription.findUnique({
-    where: { stripeSubscriptionId: paymentIntent.subscription }
+    where: { stripeSubscriptionId }
   });
 
   if (!subscription) {
@@ -752,27 +789,38 @@ const handlePaymentIntentSucceeded = async (event) => {
     return;
   }
 
-  await activateSubscriptionFromStripePlan(subscription, paymentIntent.subscription);
+  await activateSubscriptionFromStripePlan(subscription, stripeSubscriptionId);
   console.log(`Subscription activated: ${paymentIntent.id}`);
 };
 
 // Helper: Handle invoice.payment_succeeded (renewal)
 const handleInvoicePaymentSucceeded = async (event) => {
   const invoice = event.data.object;
+  const stripeSubscriptionId = getSubscriptionIdFromInvoice(invoice);
 
-  if (!invoice.subscription) {
+  if (!stripeSubscriptionId) {
     return;
   }
 
   const subscription = await prisma.subscription.findUnique({
-    where: { stripeSubscriptionId: invoice.subscription }
+    where: { stripeSubscriptionId }
   });
 
   if (!subscription) {
     return;
   }
 
-  const stripeSubscription = await stripe.subscriptions.retrieve(invoice.subscription, {
+  const canActivateSubscription =
+    subscription.status === 'pending' ||
+    (subscription.status === 'active' && subscription.planType === 'Free');
+
+  if (canActivateSubscription) {
+    await activateSubscriptionFromStripePlan(subscription, stripeSubscriptionId);
+    console.log(`Subscription activated via invoice.payment_succeeded: ${subscription.userId}`);
+    return;
+  }
+
+  const stripeSubscription = await stripe.subscriptions.retrieve(stripeSubscriptionId, {
     expand: ['items.data.price.product']
   });
   const renewalDate = getCurrentPeriodEndDate(stripeSubscription, subscription.renewalDate);
@@ -791,13 +839,14 @@ const handleInvoicePaymentSucceeded = async (event) => {
 // Helper: Handle invoice.paid (subscription payment confirmed)
 const handleInvoicePaid = async (event) => {
   const invoice = event.data.object;
+  const stripeSubscriptionId = getSubscriptionIdFromInvoice(invoice);
 
-  if (!invoice.subscription) {
+  if (!stripeSubscriptionId) {
     return;
   }
 
   const subscription = await prisma.subscription.findUnique({
-    where: { stripeSubscriptionId: invoice.subscription }
+    where: { stripeSubscriptionId }
   });
 
   if (!subscription) {
@@ -810,7 +859,7 @@ const handleInvoicePaid = async (event) => {
 
   // Activate subscription if still pending, or promote Free after paid upgrade succeeds.
   if (canActivateSubscription) {
-    await activateSubscriptionFromStripePlan(subscription, invoice.subscription);
+    await activateSubscriptionFromStripePlan(subscription, stripeSubscriptionId);
     console.log(`Subscription activated via invoice.paid: ${subscription.userId}`);
   }
 };
@@ -818,13 +867,14 @@ const handleInvoicePaid = async (event) => {
 // Helper: Handle invoice.payment_failed
 const handleInvoicePaymentFailed = async (event) => {
   const failedInvoice = event.data.object;
+  const stripeSubscriptionId = getSubscriptionIdFromInvoice(failedInvoice);
 
-  if (!failedInvoice.subscription) {
+  if (!stripeSubscriptionId) {
     return;
   }
 
   const subscription = await prisma.subscription.findUnique({
-    where: { stripeSubscriptionId: failedInvoice.subscription }
+    where: { stripeSubscriptionId }
   });
 
   if (!subscription) {
@@ -880,6 +930,12 @@ const handleSubscriptionUpdated = async (event) => {
     : subscription.expiryDate;
 
   const planDetails = await getSubscriptionPlanDetails(updatedSub);
+
+  if (subscription.status === 'pending' && updatedSub.status === 'active') {
+    await activateSubscriptionFromStripePlan(subscription, updatedSub);
+    console.log(`Subscription activated via customer.subscription.updated: ${subscription.userId}`);
+    return;
+  }
 
   if (subscription.status === 'active' && subscription.planType === 'Free') {
     if (updatedSub.status !== 'active') {

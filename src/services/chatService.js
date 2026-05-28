@@ -173,6 +173,19 @@ exports.addMessageToExistingChat = async (chatId, userId, message, perspective =
       }
 
       responseCategory = perspective;
+    } else {
+      const lastMessageWithCategory = await prisma.message.findFirst({
+        where: {
+          chatId,
+          category: { not: null }
+        },
+        orderBy: { createdAt: 'desc' },
+        select: { category: true }
+      });
+
+      if (lastMessageWithCategory?.category) {
+        responseCategory = lastMessageWithCategory.category;
+      }
     }
   }
 

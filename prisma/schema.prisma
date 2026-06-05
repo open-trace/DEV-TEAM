@@ -27,6 +27,7 @@ model User {
   // Relations
   chats         Chat[]
   subscription  Subscription?
+  usageEvents   UsageEvent[]
 
   @@map("users")
 }
@@ -44,6 +45,8 @@ model Subscription {
   expiryDate            DateTime? // When subscription expires
   queriesPerMonth       Int?     // null = unlimited (Integrated plan)
   queriesUsedThisMonth  Int      @default(0) // Tracks query usage for current month
+  usageCreditsPerMonth  Float?   // null = unlimited (Integrated plan)
+  usageCreditsUsedThisMonth Float @default(0) // Token-weighted usage for flexible query limits
   monthResetDate        DateTime? // When query counter resets to 0
 
   // Stripe integration fields
@@ -55,6 +58,7 @@ model Subscription {
 
   // Relations
   user                  User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  usageEvents           UsageEvent[]
 
   @@map("subscriptions")
   @@index([userId])
@@ -76,6 +80,7 @@ model Chat {
   // Relations
   user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
   messages    Message[]
+  usageEvents UsageEvent[]
 
   @@map("chats")
   @@index([userId])
@@ -97,4 +102,28 @@ model Message {
 
   @@map("messages")
   @@index([chatId])
+}
+
+// UsageEvent model - records token usage for each successful AI query
+model UsageEvent {
+  id             String   @id @default(cuid())
+  userId         String
+  subscriptionId String
+  chatId         String?
+  inputTokens    Int
+  outputTokens   Int
+  totalTokens    Int
+  usageCredits   Float
+  createdAt      DateTime @default(now())
+
+  // Relations
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  subscription Subscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+  chat         Chat?        @relation(fields: [chatId], references: [id], onDelete: SetNull)
+
+  @@map("usage_events")
+  @@index([userId])
+  @@index([subscriptionId])
+  @@index([chatId])
+  @@index([createdAt])
 }

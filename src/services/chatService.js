@@ -116,7 +116,7 @@ exports.sendMessage = async (userId, message, perspective = null) => {
     data: {
       chatId: chat.id,
       role: 'assistant',
-      content: aiResponse,
+      content: aiResponse.answer,
       category: category  // Track which perspective/category this response used
     }
   });
@@ -128,7 +128,8 @@ exports.sendMessage = async (userId, message, perspective = null) => {
     category: chat.category,
     userId: chat.userId,
     createdAt: chat.createdAt,
-    messages: [userMessage, assistantMessage]
+    messages: [userMessage, assistantMessage],
+    tokenUsage: aiResponse.usage
   };
 };
 
@@ -207,7 +208,7 @@ exports.addMessageToExistingChat = async (chatId, userId, message, perspective =
     data: {
       chatId,
       role: 'assistant',
-      content: aiResponse,
+      content: aiResponse.answer,
       category: responseCategory  // Track which perspective/category this response used
     }
   });
@@ -222,7 +223,10 @@ exports.addMessageToExistingChat = async (chatId, userId, message, perspective =
     }
   });
 
-  return updatedChat;
+  return {
+    ...updatedChat,
+    tokenUsage: aiResponse.usage
+  };
 };
 
 /**

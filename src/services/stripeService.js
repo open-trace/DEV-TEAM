@@ -288,7 +288,9 @@ const activateSubscriptionFromStripePlan = async (subscription, stripeSubscripti
       startDate: new Date(),
       renewalDate,
       queriesPerMonth: planConfig.queriesPerMonth,
+      usageCreditsPerMonth: planConfig.usageCreditsPerMonth,
       queriesUsedThisMonth: 0,
+      usageCreditsUsedThisMonth: 0,
       monthResetDate: subscriptionService.getNextMonthResetDate(),
       updatedAt: new Date()
     }
@@ -707,7 +709,9 @@ exports.upgradeSubscription = async (userId, newPlanType, billingFrequency = nul
         price: newPrice,
         renewalDate,
         queriesPerMonth: planConfig.queriesPerMonth,
+        usageCreditsPerMonth: planConfig.usageCreditsPerMonth,
         queriesUsedThisMonth: 0,
+        usageCreditsUsedThisMonth: 0,
         monthResetDate,
         updatedAt: new Date()
       }
@@ -981,7 +985,9 @@ const handleSubscriptionUpdated = async (event) => {
         status: 'active',
         renewalDate: currentPeriodEnd,
         queriesPerMonth: planConfig ? planConfig.queriesPerMonth : subscription.queriesPerMonth,
+        usageCreditsPerMonth: planConfig ? planConfig.usageCreditsPerMonth : subscription.usageCreditsPerMonth,
         queriesUsedThisMonth: 0,
+        usageCreditsUsedThisMonth: 0,
         monthResetDate,
         updatedAt: new Date()
       }

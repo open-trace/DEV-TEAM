@@ -29,9 +29,59 @@ const BILLING_FREQUENCIES = {
 };
 
 const DEFAULT_BILLING_FREQUENCY = "monthly";
+const DEFAULT_TOKENS_PER_USAGE_CREDIT = 1000;
+
+const getTokensPerUsageCredit = () => {
+  const configuredValue = Number(process.env.USAGE_TOKENS_PER_CREDIT);
+  return configuredValue > 0 ? configuredValue : DEFAULT_TOKENS_PER_USAGE_CREDIT;
+};
 
 const roundCurrency = (amount) =>
   Number((Math.round(amount * 100 + 1e-6) / 100).toFixed(2));
+
+const roundUsageCredits = (credits) =>
+  Number((Math.round(credits * 10000 + 1e-8) / 10000).toFixed(4));
+
+const calculateUsageCredits = (tokenUsage = {}) => {
+  const totalTokens = Number(tokenUsage.totalTokens) || 0;
+
+  if (totalTokens <= 0) {
+    return 1;
+  }
+
+  return roundUsageCredits(totalTokens / getTokensPerUsageCredit());
+};
+
+const calculateUsagePercent = (usedCredits, limitCredits) => {
+  if (limitCredits === null || limitCredits === undefined) {
+    return null;
+  }
+
+  if (limitCredits <= 0) {
+    return 100;
+  }
+
+  return Math.min(100, Math.round((usedCredits / limitCredits) * 100));
+};
+
+const buildUsageSummary = (subscription) => {
+  const usedCredits = Number(subscription.usageCreditsUsedThisMonth) || 0;
+  const limitCredits = subscription.usageCreditsPerMonth;
+  const usagePercent = calculateUsagePercent(usedCredits, limitCredits);
+  const remainingCredits =
+    limitCredits === null || limitCredits === undefined
+      ? null
+      : Math.max(0, roundUsageCredits(limitCredits - usedCredits));
+
+  return {
+    usageCreditsUsed: roundUsageCredits(usedCredits),
+    usageCreditsLimit: limitCredits,
+    usageCreditsRemaining: remainingCredits,
+    usagePercent,
+    remainingPercent: usagePercent === null ? null : Math.max(0, 100 - usagePercent),
+    isUnlimited: limitCredits === null || limitCredits === undefined,
+  };
+};
 
 const buildBillingOption = (billingFrequency, price, equivalentMonthlyPrice) => ({
   billingFrequency,
@@ -86,6 +136,7 @@ const SUBSCRIPTION_PLANS = {
     name: "Free",
     price: 0,
     queriesPerMonth: 5,
+    usageCreditsPerMonth: 5,
     description: "Try Ask ADZA, explore Africa's agricultural intelligence with a handful of questions a month, no commitment.",
     features: [
       "5 queries/mo",
@@ -99,6 +150,7 @@ const SUBSCRIPTION_PLANS = {
     name: "Farmers, Cooperatives & Communities",
     price: 2.99,
     queriesPerMonth: 50,
+    usageCreditsPerMonth: 50,
     description: "Track rainfall, local yields, and market prices for your crops, in plain language.",
     features: [
       "Localized regional insights",
@@ -111,6 +163,7 @@ const SUBSCRIPTION_PLANS = {
     name: "Government & Public Institutions",
     price: 9.99,
     queriesPerMonth: 200,
+    usageCreditsPerMonth: 200,
     description: "Explore production, climate, and food security patterns across regions, without waiting months for fragmented reports.",
     features: [
       "National + sub-national queries",
@@ -123,6 +176,7 @@ const SUBSCRIPTION_PLANS = {
     name: "Foundations, NGOs & Development Partners",
     price: 14.99,
     queriesPerMonth: 400,
+    usageCreditsPerMonth: 400,
     description: "Target programs, monitor field conditions, and back funding decisions with continuous, evidence-based intelligence.",
     features: [
       "Everything in Government",
@@ -136,6 +190,7 @@ const SUBSCRIPTION_PLANS = {
     name: "Agribusinesses & Financial Institutions",
     price: 24.99,
     queriesPerMonth: 800,
+    usageCreditsPerMonth: 800,
     description: "Assess production stability, market volatility, and regional risk to sharpen sourcing, lending, and investment decisions.",
     features: [
       "Everything in NGO",
@@ -149,6 +204,7 @@ const SUBSCRIPTION_PLANS = {
     name: "Integrated Account",
     price: 39.99,
     queriesPerMonth: null, // unlimited
+    usageCreditsPerMonth: null, // unlimited
     description: "Full cross-sector access for consultants, researchers, and teams working across multiple stakeholder lenses.",
     features: [
       "All lenses combined",
@@ -197,6 +253,7 @@ exports.getPlans = async () => {
     monthlyPrice: value.price,
     billingOptions: buildBillingOptions(value.price),
     queriesPerMonth: value.queriesPerMonth,
+    usageCreditsPerMonth: value.usageCreditsPerMonth,
     description: value.description,
     features: value.features,
   }));
@@ -246,7 +303,9 @@ exports.selectPlan = async (userId, planType, billingFrequency = DEFAULT_BILLING
         billingFrequency: billingOption.billingFrequency,
         price: billingOption.price,
         queriesPerMonth: planConfig.queriesPerMonth,
+        usageCreditsPerMonth: planConfig.usageCreditsPerMonth,
         queriesUsedThisMonth: 0,
+        usageCreditsUsedThisMonth: 0,
         monthResetDate: monthResetDate,
         status: isFreeplan ? "active" : "pending",
       },
@@ -279,7 +338,9 @@ exports.selectPlan = async (userId, planType, billingFrequency = DEFAULT_BILLING
         billingFrequency: billingOption.billingFrequency,
         price: billingOption.price,
         queriesPerMonth: planConfig.queriesPerMonth,
+        usageCreditsPerMonth: planConfig.usageCreditsPerMonth,
         queriesUsedThisMonth: 0,
+        usageCreditsUsedThisMonth: 0,
         monthResetDate: monthResetDate,
         status: isFreeplan ? "active" : "pending", // Free plan is immediately active
       },
@@ -294,7 +355,9 @@ exports.selectPlan = async (userId, planType, billingFrequency = DEFAULT_BILLING
     billingFrequency: billingOption.billingFrequency,
     price: billingOption.price,
     queriesPerMonth: planConfig.queriesPerMonth,
+    usageCreditsPerMonth: planConfig.usageCreditsPerMonth,
     queriesUsedThisMonth: 0,
+    usageCreditsUsedThisMonth: 0,
     monthResetDate: monthResetDate,
     status: isFreeplan ? "active" : "pending", // Free plan is immediately active, paid plans are pending
   };
@@ -335,6 +398,7 @@ exports.getCurrentSubscription = async (userId) => {
     planName: planDetails.name,
     planDescription: planDetails.description,
     monthlyPrice: planDetails.price,
+    usage: buildUsageSummary(subscription),
     billingOption,
     billingOptions,
     isActive: subscription.status === "active" || subscription.status === "past_due",
@@ -370,6 +434,7 @@ const resetMonthlyQueriesIfNeeded = async (subscription) => {
     where: { id: subscription.id },
     data: {
       queriesUsedThisMonth: 0,
+      usageCreditsUsedThisMonth: 0,
       monthResetDate: getNextMonthResetDate(),
     },
   });
@@ -411,26 +476,32 @@ exports.checkQueryLimit = async (userId) => {
     // Reset monthly queries if needed
     const updatedSubscription = await resetMonthlyQueriesIfNeeded(subscription);
 
-    // Integrated plan has unlimited queries (queriesPerMonth is null)
-    if (updatedSubscription.queriesPerMonth === null) {
+    const usage = buildUsageSummary(updatedSubscription);
+
+    // Integrated plan has unlimited usage credits (usageCreditsPerMonth is null)
+    if (usage.isUnlimited) {
       return {
         success: true,
         hasQueries: true,
         queriesRemaining: null, // unlimited
+        usage,
         message: "Unlimited queries available",
       };
     }
 
-    // Calculate remaining queries
-    const queriesRemaining = updatedSubscription.queriesPerMonth - updatedSubscription.queriesUsedThisMonth;
+    // Calculate remaining query count for display only. Enforcement uses usage credits.
+    const queriesRemaining = Math.max(
+      0,
+      updatedSubscription.queriesPerMonth - updatedSubscription.queriesUsedThisMonth,
+    );
 
-    // Check if queries remain
-    if (queriesRemaining <= 0) {
+    if (usage.usageCreditsRemaining <= 0) {
       return {
         success: false,
         hasQueries: false,
-        queriesRemaining: 0,
-        message: `Query limit reached. You have used ${updatedSubscription.queriesUsedThisMonth} of ${updatedSubscription.queriesPerMonth} queries this month.`,
+        queriesRemaining,
+        usage,
+        message: "Monthly usage limit reached.",
       };
     }
 
@@ -438,7 +509,8 @@ exports.checkQueryLimit = async (userId) => {
       success: true,
       hasQueries: true,
       queriesRemaining,
-      message: `You have ${queriesRemaining} queries remaining this month.`,
+      usage,
+      message: `You have ${usage.usageCreditsRemaining} usage credits remaining this month.`,
     };
   } catch (error) {
     console.error("Check query limit error:", error);
@@ -452,11 +524,13 @@ exports.checkQueryLimit = async (userId) => {
 };
 
 /**
- * Increment query usage for user (called after a successful query)
+ * Increment query usage for user and record token usage (called after a successful query)
  * @param {string} userId - User's ID
+ * @param {object} tokenUsage - AI provider token usage
+ * @param {string|null} chatId - Chat ID for the usage event
  * @returns {object} { success, queriesRemaining, message }
  */
-exports.incrementQueryUsage = async (userId) => {
+exports.incrementQueryUsage = async (userId, tokenUsage = {}, chatId = null) => {
   try {
     const subscription = await prisma.subscription.findUnique({
       where: { userId },
@@ -472,11 +546,43 @@ exports.incrementQueryUsage = async (userId) => {
     // Reset if needed before incrementing
     const updatedSubscription = await resetMonthlyQueriesIfNeeded(subscription);
 
-    // Integrated plan (unlimited) - don't increment
+    const usageCredits = calculateUsageCredits(tokenUsage);
+    const totalTokens = Number(tokenUsage.totalTokens) || 0;
+    const inputTokens = Number(tokenUsage.inputTokens) || 0;
+    const outputTokens = Number(tokenUsage.outputTokens) || 0;
+
+    // Integrated plan (unlimited) - record token usage, but don't increment query count
     if (updatedSubscription.queriesPerMonth === null) {
+      const resultSubscription = await prisma.$transaction(async (tx) => {
+        const subscriptionResult = await tx.subscription.update({
+          where: { id: updatedSubscription.id },
+          data: {
+            usageCreditsUsedThisMonth: {
+              increment: usageCredits,
+            },
+          },
+        });
+
+        await tx.usageEvent.create({
+          data: {
+            userId,
+            subscriptionId: updatedSubscription.id,
+            chatId,
+            inputTokens,
+            outputTokens,
+            totalTokens,
+            usageCredits,
+          },
+        });
+
+        return subscriptionResult;
+      });
+
       return {
         success: true,
         queriesRemaining: null,
+        usageCreditsUsedThisMonth: resultSubscription.usageCreditsUsedThisMonth,
+        usage: buildUsageSummary(resultSubscription),
         message: "Query recorded (unlimited plan)",
       };
     }
@@ -484,19 +590,45 @@ exports.incrementQueryUsage = async (userId) => {
     // Increment usage
     const newUsage = updatedSubscription.queriesUsedThisMonth + 1;
 
-    const resultSubscription = await prisma.subscription.update({
-      where: { id: subscription.id },
-      data: {
-        queriesUsedThisMonth: newUsage,
-      },
+    const resultSubscription = await prisma.$transaction(async (tx) => {
+      const subscriptionResult = await tx.subscription.update({
+        where: { id: updatedSubscription.id },
+        data: {
+          queriesUsedThisMonth: newUsage,
+          usageCreditsUsedThisMonth: {
+            increment: usageCredits,
+          },
+        },
+      });
+
+      await tx.usageEvent.create({
+        data: {
+          userId,
+          subscriptionId: updatedSubscription.id,
+          chatId,
+          inputTokens,
+          outputTokens,
+          totalTokens,
+          usageCredits,
+        },
+      });
+
+      return subscriptionResult;
     });
 
-    const queriesRemaining = resultSubscription.queriesPerMonth - resultSubscription.queriesUsedThisMonth;
+    const queriesRemaining = Math.max(
+      0,
+      resultSubscription.queriesPerMonth - resultSubscription.queriesUsedThisMonth,
+    );
+    const usage = buildUsageSummary(resultSubscription);
 
     return {
       success: true,
       queriesRemaining,
-      message: `Query recorded. ${queriesRemaining} queries remaining this month.`,
+      usageCredits,
+      usageCreditsUsedThisMonth: resultSubscription.usageCreditsUsedThisMonth,
+      usage,
+      message: `Query recorded. ${usage.usageCreditsRemaining} usage credits remaining this month.`,
     };
   } catch (error) {
     console.error("Increment query usage error:", error);

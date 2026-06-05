@@ -5,11 +5,22 @@ const AI_API_URL = process.env.AI_API_URL;
 const AI_API_KEY = process.env.AI_API_KEY;
 const AI_MODEL_NAME = process.env.AI_MODEL_NAME;
 
+const normalizeTokenUsage = (usage = {}) => {
+  const inputTokens = usage.input_tokens ?? usage.prompt_tokens ?? 0;
+  const outputTokens = usage.output_tokens ?? usage.completion_tokens ?? 0;
+
+  return {
+    inputTokens,
+    outputTokens,
+    totalTokens: usage.total_tokens ?? inputTokens + outputTokens,
+  };
+};
+
 /**
  * Send a question to external AI API and get answer
  * @param {string} prompt - The question to ask the AI
  * @param {string|null} category - Optional category/perspective (Government, NGOs, Agribusinesses, Farmers, Integrated)
- * @returns {string} AI-generated answer
+ * @returns {object} AI-generated answer and token usage
  */
 exports.askAI = async (prompt, category = null) => {
   try {
@@ -47,8 +58,12 @@ exports.askAI = async (prompt, category = null) => {
     // OpenAI-compatible response
     // Response format: {choices: [{message: {content: "answer"}}]}
     const answer = response.data.choices[0].message.content;
+    const usage = normalizeTokenUsage(response.data.usage);
 
-    return answer;
+    return {
+      answer,
+      usage,
+    };
   } catch (error) {
     console.error("AI API Error:", error.response?.data || error.message);
     console.error("Full error details:", {

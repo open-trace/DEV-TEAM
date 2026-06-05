@@ -68,7 +68,8 @@ exports.sendChat = async (req, res) => {
     if (!queryLimitCheck.hasQueries) {
       return res.status(429).json({
         error: queryLimitCheck.message,
-        queriesRemaining: queryLimitCheck.queriesRemaining
+        queriesRemaining: queryLimitCheck.queriesRemaining,
+        usage: queryLimitCheck.usage
       });
     }
 
@@ -94,9 +95,13 @@ exports.sendChat = async (req, res) => {
     const chat = await chatService.sendMessage(req.user.id, message, perspective);
 
     // Increment query usage AFTER request succeeds
-    await subscriptionService.incrementQueryUsage(req.user.id);
+    const usageResult = await subscriptionService.incrementQueryUsage(req.user.id, chat.tokenUsage, chat.id);
+    const { tokenUsage, ...chatResponse } = chat;
 
-    res.status(201).json(chat);
+    res.status(201).json({
+      ...chatResponse,
+      usage: usageResult.usage
+    });
   } catch (error) {
     if (error.message.toLowerCase().includes('subscription')) {
       return res.status(402).json({ error: error.message }); // 402 Payment Required
@@ -150,7 +155,8 @@ exports.addMessageToChat = async (req, res) => {
     if (!queryLimitCheck.hasQueries) {
       return res.status(429).json({
         error: queryLimitCheck.message,
-        queriesRemaining: queryLimitCheck.queriesRemaining
+        queriesRemaining: queryLimitCheck.queriesRemaining,
+        usage: queryLimitCheck.usage
       });
     }
 
@@ -162,9 +168,13 @@ exports.addMessageToChat = async (req, res) => {
     }
 
     // Increment query usage AFTER request succeeds
-    await subscriptionService.incrementQueryUsage(req.user.id);
+    const usageResult = await subscriptionService.incrementQueryUsage(req.user.id, updatedChat.tokenUsage, updatedChat.id);
+    const { tokenUsage, ...chatResponse } = updatedChat;
 
-    res.status(200).json(updatedChat);
+    res.status(200).json({
+      ...chatResponse,
+      usage: usageResult.usage
+    });
   } catch (error) {
     if (error.message.toLowerCase().includes('subscription')) {
       return res.status(402).json({ error: error.message }); // 402 Payment Required

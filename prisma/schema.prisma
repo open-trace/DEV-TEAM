@@ -45,8 +45,8 @@ model Subscription {
   expiryDate            DateTime? // When subscription expires
   queriesPerMonth       Int?     // null = unlimited (Integrated plan)
   queriesUsedThisMonth  Int      @default(0) // Tracks query usage for current month
-  usageCreditsPerMonth  Float?   // null = unlimited (Integrated plan)
-  usageCreditsUsedThisMonth Float @default(0) // Token-weighted usage for flexible query limits
+  usageCreditsPerMonth  Decimal? @db.Decimal(10, 4) // null = unlimited (Integrated plan)
+  usageCreditsUsedThisMonth Decimal @default(0) @db.Decimal(10, 4) // Token-weighted usage for flexible query limits
   monthResetDate        DateTime? // When query counter resets to 0
 
   // Stripe integration fields
@@ -113,7 +113,7 @@ model UsageEvent {
   inputTokens    Int
   outputTokens   Int
   totalTokens    Int
-  usageCredits   Float
+  usageCredits   Decimal  @db.Decimal(10, 4)
   createdAt      DateTime @default(now())
 
   // Relations

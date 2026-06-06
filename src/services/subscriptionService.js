@@ -66,7 +66,11 @@ const calculateUsagePercent = (usedCredits, limitCredits) => {
 
 const buildUsageSummary = (subscription) => {
   const usedCredits = Number(subscription.usageCreditsUsedThisMonth) || 0;
-  const limitCredits = subscription.usageCreditsPerMonth;
+  const limitCredits =
+    subscription.usageCreditsPerMonth === null ||
+    subscription.usageCreditsPerMonth === undefined
+      ? null
+      : Number(subscription.usageCreditsPerMonth);
   const usagePercent = calculateUsagePercent(usedCredits, limitCredits);
   const remainingCredits =
     limitCredits === null || limitCredits === undefined

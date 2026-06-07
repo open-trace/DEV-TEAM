@@ -8,7 +8,7 @@ const {
 } = require("../controllers/subscriptionController");
 
 /**
- * @route   GET /api/subscriptions/plans
+ * @route   GET /api/subscriptions/plans?currency=KES
  * @desc    Get all available subscription plans
  * @access  Public (no authentication needed)
  */

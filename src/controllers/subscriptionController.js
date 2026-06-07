@@ -7,9 +7,24 @@ const subscriptionService = require("../services/subscriptionService");
  */
 exports.getPlans = async (req, res) => {
   try {
-    const plans = await subscriptionService.getPlans();
+    const currency =
+      typeof req.query.currency === "string"
+        ? req.query.currency.trim().toUpperCase()
+        : "USD";
+
+    if (!/^[A-Z]{3}$/.test(currency)) {
+      return res.status(400).json({
+        error: "Currency must be a valid three-letter code, for example KES or USD",
+      });
+    }
+
+    const plans = await subscriptionService.getPlans(currency);
     res.status(200).json(plans);
   } catch (error) {
+    if (error.code === "INVALID_CURRENCY_CODE") {
+      return res.status(400).json({ error: error.message });
+    }
+
     console.error("Get plans error:", error);
     res.status(500).json({ error: "Failed to retrieve subscription plans" });
   }

@@ -1,4 +1,5 @@
 const prisma = require("../utils/prismaClient");
+const { getUsdExchangeRate } = require("./currencyService");
 
 const BILLING_FREQUENCIES = {
   monthly: {
@@ -38,6 +39,34 @@ const getTokensPerUsageCredit = () => {
 
 const roundCurrency = (amount) =>
   Number((Math.round(amount * 100 + 1e-6) / 100).toFixed(2));
+
+/**
+ * Build an approximate local display price without changing the USD price.
+ */
+const buildLocalPrice = (usdAmount, exchangeRate) => {
+  if (exchangeRate.currency === "USD") {
+    return null;
+  }
+
+  return {
+    amount: roundCurrency(usdAmount * exchangeRate.rate),
+    currency: exchangeRate.currency,
+    isEstimate: true,
+  };
+};
+
+/**
+ * Add local display prices to each billing option.
+ */
+const addLocalPricesToBillingOptions = (billingOptions, exchangeRate) =>
+  billingOptions.map((option) => ({
+    ...option,
+    localPrice: buildLocalPrice(option.price, exchangeRate),
+    localEquivalentMonthlyPrice: buildLocalPrice(
+      option.equivalentMonthlyPrice,
+      exchangeRate,
+    ),
+  }));
 
 const roundUsageCredits = (credits) =>
   Number((Math.round(credits * 10000 + 1e-8) / 10000).toFixed(4));
@@ -247,20 +276,74 @@ exports.getBillingOption = (planType, billingFrequency) => {
 
 /**
  * Get all available subscription plans
+ * @param {string} displayCurrency - Currency requested for display pricing
  * @returns {array} Array of available plans with pricing
  */
-exports.getPlans = async () => {
-  const plans = Object.entries(SUBSCRIPTION_PLANS).map(([key, value]) => ({
-    id: key,
-    name: value.name,
-    price: value.price,
-    monthlyPrice: value.price,
-    billingOptions: buildBillingOptions(value.price),
-    queriesPerMonth: value.queriesPerMonth,
-    usageCreditsPerMonth: value.usageCreditsPerMonth,
-    description: value.description,
-    features: value.features,
-  }));
+exports.getPlans = async (displayCurrency = "USD") => {
+  let exchangeRate;
+  let localPricingAvailable = true;
+  let localPricingUnavailableReason = null;
+
+  try {
+    // Fetch one rate and reuse it for every plan and billing frequency.
+    exchangeRate = await getUsdExchangeRate(displayCurrency);
+  } catch (error) {
+    // Malformed codes are caller errors and should be returned as HTTP 400.
+    if (error.code === "INVALID_CURRENCY_CODE") {
+      throw error;
+    }
+
+    // Unsupported currencies and provider failures should not block USD plans.
+    console.error("Local pricing unavailable:", error.message);
+    localPricingAvailable = false;
+    localPricingUnavailableReason = error.code === "UNSUPPORTED_CURRENCY"
+      ? "unsupported_currency"
+      : "exchange_rate_unavailable";
+    exchangeRate = {
+      currency: "USD",
+      rate: 1,
+      lastUpdatedAt: null,
+      nextUpdateAt: null,
+    };
+  }
+
+  const plans = Object.entries(SUBSCRIPTION_PLANS).map(([key, value]) => {
+    const billingOptions = buildBillingOptions(value.price);
+
+    return {
+      id: key,
+      name: value.name,
+      price: value.price,
+      monthlyPrice: value.price,
+      currency: "USD",
+      localPrice: localPricingAvailable
+        ? buildLocalPrice(value.price, exchangeRate)
+        : null,
+      billingOptions: localPricingAvailable
+        ? addLocalPricesToBillingOptions(billingOptions, exchangeRate)
+        : addLocalPricesToBillingOptions(billingOptions, {
+            ...exchangeRate,
+            currency: "USD",
+          }),
+      localPricing: {
+        requestedCurrency: displayCurrency,
+        available: localPricingAvailable,
+        isEstimate: localPricingAvailable && exchangeRate.currency !== "USD",
+        reason: localPricingUnavailableReason,
+      },
+      exchangeRate: {
+        baseCurrency: "USD",
+        displayCurrency: localPricingAvailable ? exchangeRate.currency : null,
+        rate: localPricingAvailable ? exchangeRate.rate : null,
+        lastUpdatedAt: exchangeRate.lastUpdatedAt,
+        nextUpdateAt: exchangeRate.nextUpdateAt,
+      },
+      queriesPerMonth: value.queriesPerMonth,
+      usageCreditsPerMonth: value.usageCreditsPerMonth,
+      description: value.description,
+      features: value.features,
+    };
+  });
 
   return plans;
 };

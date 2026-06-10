@@ -15,6 +15,7 @@ model User {
   email     String   @unique
   password  String
   name      String?
+  country   String   // Required; set once at registration, never updated (used for plan control)
   emailVerified            Boolean   @default(false)
   emailVerificationToken   String?   @unique
   emailVerificationExpires DateTime?

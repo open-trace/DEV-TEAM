@@ -18,13 +18,51 @@ model User {
   emailVerified            Boolean   @default(false)
   emailVerificationToken   String?   @unique
   emailVerificationExpires DateTime?
+  passwordResetToken       String?   @unique
+  passwordResetExpires     DateTime?
+  settings                 Json      @default("{\"theme\":\"light\",\"notifications\":true,\"chatHistoryEnabled\":true,\"language\":\"en\",\"modelTemperature\":0.7,\"exportFormat\":\"json\"}")
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   // Relations
-  chats     Chat[]
+  chats         Chat[]
+  subscription  Subscription?
+  usageEvents   UsageEvent[]
 
   @@map("users")
+}
+
+// Subscription model - user subscription plans
+model Subscription {
+  id                    String   @id @default(cuid())
+  userId                String   @unique
+  planType              String   // "Free", "Farmers", "Government", "NGOs", "Agribusinesses", "Integrated"
+  billingFrequency      String   @default("monthly") // "monthly", "quarterly", "yearly"
+  price                 Float    // Amount charged for the selected billing frequency
+  status                String   @default("pending") // "pending", "active", "past_due", "cancelled", "expired"
+  startDate             DateTime @default(now())
+  renewalDate           DateTime? // Next renewal date
+  expiryDate            DateTime? // When subscription expires
+  queriesPerMonth       Int?     // null = unlimited (Integrated plan)
+  queriesUsedThisMonth  Int      @default(0) // Tracks query usage for current month
+  usageCreditsPerMonth  Decimal? @db.Decimal(10, 4) // null = unlimited (Integrated plan)
+  usageCreditsUsedThisMonth Decimal @default(0) @db.Decimal(10, 4) // Token-weighted usage for flexible query limits
+  monthResetDate        DateTime? // When query counter resets to 0
+
+  // Stripe integration fields
+  stripeCustomerId      String?  @unique // Stripe customer ID
+  stripeSubscriptionId  String?  @unique // Stripe subscription ID (for recurring charges)
+
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  // Relations
+  user                  User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  usageEvents           UsageEvent[]
+
+  @@map("subscriptions")
+  @@index([userId])
+  @@index([status])
 }
 
 // Chat model - represents a conversation thread
@@ -33,15 +71,20 @@ model Chat {
   title       String?
   category    String?   // User type: Government, NGOs, Agribusinesses, Farmers
   userId      String
+  archived    Boolean   @default(false)   // Archive status
+  isShared    Boolean   @default(false)   // Share status
+  shareToken  String?   @unique           // Unique token for public sharing
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
 
   // Relations
   user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
   messages    Message[]
+  usageEvents UsageEvent[]
 
   @@map("chats")
   @@index([userId])
+  @@index([shareToken])
 }
 
 // Message model - individual messages in a chat
@@ -50,6 +93,7 @@ model Message {
   chatId    String
   role      String   // "user" or "assistant"
   content   String   @db.Text
+  category  String?  // Category/perspective used for this message (Government, NGOs, Agribusinesses, Farmers, Integrated)
   metadata  Json?    // For storing additional data (context type, timestamps, etc.)
   createdAt DateTime @default(now())
 
@@ -58,4 +102,28 @@ model Message {
 
   @@map("messages")
   @@index([chatId])
+}
+
+// UsageEvent model - records token usage for each successful AI query
+model UsageEvent {
+  id             String   @id @default(cuid())
+  userId         String
+  subscriptionId String
+  chatId         String?
+  inputTokens    Int
+  outputTokens   Int
+  totalTokens    Int
+  usageCredits   Decimal  @db.Decimal(10, 4)
+  createdAt      DateTime @default(now())
+
+  // Relations
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  subscription Subscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+  chat         Chat?        @relation(fields: [chatId], references: [id], onDelete: SetNull)
+
+  @@map("usage_events")
+  @@index([userId])
+  @@index([subscriptionId])
+  @@index([chatId])
+  @@index([createdAt])
 }

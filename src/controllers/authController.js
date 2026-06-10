@@ -1,4 +1,4 @@
-const { registerUser, loginUser, verifyEmail, resendVerificationEmail } = require('../services/authService');
+const { registerUser, loginUser, verifyEmail, resendVerificationEmail, requestPasswordReset, resetUserPassword } = require('../services/authService');
 const { blacklistToken } = require('../utils/tokenUtils');
 
 /**
@@ -80,7 +80,7 @@ const login = async (req, res) => {
 const logout = async (req, res) => {
   try {
     // Get token from middleware
-    const token = req.token; 
+    const token = req.token;
 
     // Add token to blacklist
     blacklistToken(token);
@@ -161,10 +161,78 @@ const resendVerification = async (req, res) => {
   }
 };
 
+/**
+ * Handle forgot password request
+ * @route POST /api/auth/forgot-password
+ */
+const forgotPassword = async (req, res) => {
+  try {
+    const { email } = req.body;
+
+    if (!email) {
+      return res.status(400).json({
+        success: false,
+        message: 'Email is required'
+      });
+    }
+
+    const result = await requestPasswordReset(email);
+
+    // Return 200 for security
+    return res.status(200).json(result);
+  } catch (error) {
+    console.error('Forgot password controller error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Server error during password reset request'
+    });
+  }
+};
+
+/**
+ * Handle password reset
+ * @route POST /api/auth/reset-password
+ */
+const resetPassword = async (req, res) => {
+  try {
+    const { token, newPassword } = req.body;
+
+    if (!token) {
+      return res.status(400).json({
+        success: false,
+        message: 'Reset token is required'
+      });
+    }
+
+    if (!newPassword) {
+      return res.status(400).json({
+        success: false,
+        message: 'New password is required'
+      });
+    }
+
+    const result = await resetUserPassword(token, newPassword);
+
+    if (result.success) {
+      return res.status(200).json(result);
+    }
+
+    return res.status(400).json(result);
+  } catch (error) {
+    console.error('Reset password controller error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Server error during password reset'
+    });
+  }
+};
+
 module.exports = {
   signup,
   login,
   logout,
   verifyEmailAddress,
-  resendVerification
+  resendVerification,
+  forgotPassword,
+  resetPassword
 };

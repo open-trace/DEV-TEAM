@@ -1,5 +1,5 @@
 const express = require('express');
-const { signup, login, logout, verifyEmailAddress, resendVerification } = require('../controllers/authController');
+const { signup, login, logout, verifyEmailAddress, resendVerification, forgotPassword, resetPassword } = require('../controllers/authController');
 const auth = require('../middleware/authMiddleware');
 
 const router = express.Router();
@@ -38,5 +38,19 @@ router.post('/resend-verification', resendVerification);
  * @access  Protected
  */
 router.post('/logout', auth, logout);
+
+/**
+ * @route   POST /api/auth/forgot-password
+ * @desc    Request password reset with email
+ * @access  Public
+ */
+router.post('/forgot-password', forgotPassword);
+
+/**
+ * @route   POST /api/auth/reset-password
+ * @desc    Reset password with token from email
+ * @access  Public
+ */
+router.post('/reset-password', resetPassword);
 
 module.exports = router;

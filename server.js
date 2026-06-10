@@ -4,17 +4,22 @@ const cors = require('cors');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 
-// Import authentication routes
+// Import routes
 const authRoutes = require('./src/routes/authRoutes');
 const userRoutes = require('./src/routes/userRoutes');
 const promptRoutes = require('./src/routes/promptRoutes');
 const chatRoutes = require('./src/routes/chatRoutes');
+const subscriptionRoutes = require('./src/routes/subscriptionRoutes');
+const paymentRoutes = require('./src/routes/paymentRoutes');
 
 const app = express();
 
 // Security middleware
 app.use(helmet());
 app.use(cors());
+
+// cPanel/Apache usually sits in front of Node and forwards the client IP.
+app.set('trust proxy', process.env.TRUST_PROXY || 1);
 
 // Rate limiting
 const limiter = rateLimit({
@@ -23,6 +28,12 @@ const limiter = rateLimit({
   message: 'Too many requests from this IP, please try again later.'
 });
 app.use('/api/', limiter);
+
+// Webhook middleware - capture raw body for Stripe signature verification
+app.use('/api/payments/webhooks/stripe', express.raw({ type: 'application/json' }), (req, res, next) => {
+  req.rawBody = req.body;
+  next();
+});
 
 // Body parser
 app.use(express.json());
@@ -38,11 +49,13 @@ app.get('/api', (req, res) => {
   res.json({ message: 'Welcome to OpenTrace API' });
 });
 
-// Auth routes
+// Routes
 app.use('/api/auth', authRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/prompts', promptRoutes);
 app.use('/api/chats', chatRoutes);
+app.use('/api/subscriptions', subscriptionRoutes);
+app.use('/api/payments', paymentRoutes);
 
 // 404 handler
 app.use((req, res) => {

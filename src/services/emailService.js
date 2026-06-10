@@ -57,7 +57,7 @@ const sendVerificationEmail = async ({ toEmail, name, verificationToken }) => {
   const fromEmail =
     process.env.MAIL_FROM || "OpenTrace <no-reply@opentrace.local>";
 
-  const verificationUrl = `${appBaseUrl}/api/auth/verify-email?token=${encodeURIComponent(verificationToken)}`;
+  const verificationUrl = `https://www.askadza.com/verify-email?token=${encodeURIComponent(verificationToken)}`;
 
   const info = await transporter.sendMail({
     from: fromEmail,
@@ -92,6 +92,50 @@ const sendVerificationEmail = async ({ toEmail, name, verificationToken }) => {
   return { info, previewUrl };
 };
 
+/**
+ * Send password reset email with a one-time reset link.
+ */
+const sendPasswordResetEmail = async ({ toEmail, name, resetToken }) => {
+  const transporter = await getTransporter();
+  const fromEmail =
+    process.env.MAIL_FROM || "OpenTrace <no-reply@opentrace.local>";
+
+  const resetUrl = `https://www.askadza.com/reset-password?token=${encodeURIComponent(resetToken)}`;
+
+  const info = await transporter.sendMail({
+    from: fromEmail,
+    to: toEmail,
+    subject: "Reset your OpenTrace password",
+    html: `
+      <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #222;">
+        <h2>Password Reset Request</h2>
+        <p>Hello${name ? ` ${name}` : ""},</p>
+        <p>We received a request to reset your password.</p>
+        <p>
+          <a
+            href="${resetUrl}"
+            style="display:inline-block;padding:10px 16px;background:#0a66c2;color:#fff;text-decoration:none;border-radius:6px;"
+          >
+            Reset Password
+          </a>
+        </p>
+        <p>This link expires in 1 hour.</p>
+        <p>If you did not request a password reset, you can safely ignore this email.</p>
+      </div>
+    `,
+  });
+
+  const previewUrl = nodemailer.getTestMessageUrl(info);
+
+  // Useful for development when using Ethereal
+  if (previewUrl) {
+    console.log("Email preview URL:", previewUrl);
+  }
+
+  return { info, previewUrl };
+};
+
 module.exports = {
   sendVerificationEmail,
+  sendPasswordResetEmail,
 };

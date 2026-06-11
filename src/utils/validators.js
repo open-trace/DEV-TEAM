@@ -1,3 +1,5 @@
+const { normalizeCountry } = require('./countries');
+
 /**
  * Validate email format
  * @param {string} email - Email address to validate
@@ -58,8 +60,17 @@ const isValidName = (name) => {
   return name.trim().length >= 2 && name.trim().length <= 50;
 };
 
+/**
+ * Validate that a country is a recognized ISO 3166-1 country.
+ * @param {string} country - Country to validate
+ * @returns {boolean} True if recognized, false otherwise
+ */
+const isValidCountry = (country) => normalizeCountry(country) !== null;
+
 module.exports = {
   isValidEmail,
   isValidPassword,
-  isValidName
+  isValidName,
+  isValidCountry,
+  normalizeCountry
 };

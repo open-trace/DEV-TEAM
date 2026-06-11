@@ -1,7 +1,7 @@
 const bcrypt = require('bcryptjs');
 const { PrismaClient } = require('@prisma/client');
 const { generateToken, generateVerificationToken, getVerificationTokenExpiry } = require('../utils/tokenUtils');
-const { isValidEmail, isValidPassword, isValidName } = require('../utils/validators');
+const { isValidEmail, isValidPassword, isValidName, normalizeCountry } = require('../utils/validators');
 const { sendVerificationEmail, sendPasswordResetEmail } = require('./emailService');
 
 const prisma = new PrismaClient();
@@ -11,9 +11,10 @@ const prisma = new PrismaClient();
  * @param {string} email - User's email
  * @param {string} password - User's password
  * @param {string} name - User's name (optional)
+ * @param {string} country - User's country (required; set once, never updated)
  * @returns {object} { success, token, user, message }
  */
-const registerUser = async (email, password, name = null) => {
+const registerUser = async (email, password, name = null, country = null) => {
   try {
     // Validate email
     if (!isValidEmail(email)) {
@@ -29,6 +30,12 @@ const registerUser = async (email, password, name = null) => {
     // Validate name if provided
     if (name && !isValidName(name)) {
       return { success: false, message: 'Name must be between 2 and 50 characters' };
+    }
+
+    // Validate country (required; used for plan/country-based access control)
+    const canonicalCountry = normalizeCountry(country);
+    if (!canonicalCountry) {
+      return { success: false, message: 'A valid country is required' };
     }
 
     // Check if user already exists
@@ -54,6 +61,7 @@ const registerUser = async (email, password, name = null) => {
         email: email.toLowerCase(),
         password: hashedPassword,
         name: name,
+        country: canonicalCountry,
         emailVerified: false,
         emailVerificationToken: verificationToken,
         emailVerificationExpires: verificationExpiry
@@ -80,6 +88,7 @@ const registerUser = async (email, password, name = null) => {
         id: user.id,
         email: user.email,
         name: user.name,
+        country: user.country,
         emailVerified: user.emailVerified,
         createdAt: user.createdAt
       }

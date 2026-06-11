@@ -30,7 +30,10 @@ const BILLING_FREQUENCIES = {
 };
 
 const DEFAULT_BILLING_FREQUENCY = "monthly";
-const DEFAULT_TOKENS_PER_USAGE_CREDIT = 1000;
+// 1 usage credit = 10,000 tokens. Sized so a typical RAG query (~8k tokens, more
+// with chat history) costs ~1 credit, keeping per-plan credit budgets roughly in
+// line with each plan's estimated queries/month.
+const DEFAULT_TOKENS_PER_USAGE_CREDIT = 10000;
 
 const getTokensPerUsageCredit = () => {
   const configuredValue = Number(process.env.USAGE_TOKENS_PER_CREDIT);

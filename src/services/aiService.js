@@ -1,9 +1,10 @@
 const axios = require("axios");
 
-// Get AI API configuration from environment variables
+// RAG service endpoint
 const AI_API_URL = process.env.AI_API_URL;
-const AI_API_KEY = process.env.AI_API_KEY;
-const AI_MODEL_NAME = process.env.AI_MODEL_NAME;
+
+// RAG retrieval + generation can be slow, so allow plenty of time.
+const AI_TIMEOUT_MS = Number(process.env.AI_TIMEOUT_MS) || 120000;
 
 const normalizeTokenUsage = (usage = {}) => {
   const inputTokens = usage.input_tokens ?? usage.prompt_tokens ?? 0;
@@ -17,52 +18,54 @@ const normalizeTokenUsage = (usage = {}) => {
 };
 
 /**
- * Send a question to external AI API and get answer
- * @param {string} prompt - The question to ask the AI
- * @param {string|null} category - Optional category/perspective (Government, NGOs, Agribusinesses, Farmers, Integrated)
- * @returns {object} AI-generated answer and token usage
+ * Send a question to the data team's RAG service and get an answer.
+ *
+ * @param {object} params
+ * @param {string} params.query - The user's question
+ * @param {string|null} [params.sessionId] - Conversation/session id (chat id). The
+ *   service echoes this back
+ * @param {object|null} [params.userProfile] - { country, plan_type, category }
+ * @param {Array<{role: string, content: string}>} [params.chatHistory] - Prior turns
+ * @param {boolean} [params.includeTrace] - Ask the service for debug trace info
+ * @returns {object} { answer, citations, usage, sessionId }
  */
-exports.askAI = async (prompt, category = null) => {
+exports.askAI = async ({
+  query,
+  sessionId = null,
+  userProfile = null,
+  chatHistory = [],
+  includeTrace = false,
+} = {}) => {
   try {
-    // Build messages array - include system message with category if provided
-    const messages = [];
-    if (category) {
-      messages.push({
-        role: "system",
-        content: `You are responding from the perspective of: ${category}. Tailor your response accordingly.`
-      });
-    }
-    messages.push({
-      role: "user",
-      content: prompt
+    const payload = {
+      query,
+      session_id: sessionId,
+      user_profile: userProfile,
+      chat_history: chatHistory,
+      include_trace: includeTrace,
+    };
+
+    const response = await axios.post(AI_API_URL, payload, {
+      headers: {
+        "Content-Type": "application/json",
+      },
+      timeout: AI_TIMEOUT_MS,
     });
 
-    // POST request to Hugging Face Router API (OpenAI-compatible format)
-    const response = await axios.post(
-      AI_API_URL,
-      {
-        model: AI_MODEL_NAME,
-        messages,
-        max_tokens: 500,
-        temperature: 0.7
-      },
-      {
-        headers: {
-          Authorization: `Bearer ${AI_API_KEY}`,
-          "Content-Type": "application/json",
-        },
-        timeout: 30000, // 30 seconds for larger model
-      },
-    );
+    const data = response.data || {};
 
-    // OpenAI-compatible response
-    // Response format: {choices: [{message: {content: "answer"}}]}
-    const answer = response.data.choices[0].message.content;
-    const usage = normalizeTokenUsage(response.data.usage);
+    // The service can return HTTP 200 with an error in the body. Treat that as a failure.
+    if (data.error) {
+      const message =
+        typeof data.error === "string" ? data.error : "AI service returned an error";
+      throw new Error(message);
+    }
 
     return {
-      answer,
-      usage,
+      answer: data.answer,
+      citations: Array.isArray(data.citations) ? data.citations : [],
+      usage: normalizeTokenUsage(data.usage),
+      sessionId: data.session_id ?? sessionId,
     };
   } catch (error) {
     console.error("AI API Error:", error.response?.data || error.message);
@@ -70,13 +73,13 @@ exports.askAI = async (prompt, category = null) => {
       status: error.response?.status,
       statusText: error.response?.statusText,
       url: error.config?.url,
-      data: error.response?.data
+      data: error.response?.data,
     });
 
-    // Handle model loading (common on first request)
+    // Service unavailable (e.g. cold start / restarting)
     if (error.response?.status === 503) {
       throw new Error(
-        "AI model is loading. Please wait 20-30 seconds and try again.",
+        "AI service is temporarily unavailable. Please try again in a moment.",
       );
     }
 

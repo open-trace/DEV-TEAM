@@ -89,10 +89,13 @@ exports.sendMessage = async (userId, message, perspective = null) => {
     category = selectedPerspective;
   }
 
-  // Get AI response (pass category so AI knows the perspective)
-  const aiResponse = await askAI(message, category);
+  // Load the user's country for the RAG user profile (set once at registration)
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { country: true }
+  });
 
-  // Create a new chat with title and auto-set category based on subscription
+  // Create the chat first so its id can be reused as the RAG session id
   const chat = await prisma.chat.create({
     data: {
       userId,
@@ -100,6 +103,28 @@ exports.sendMessage = async (userId, message, perspective = null) => {
       category // Auto-set from subscription
     }
   });
+
+  // Profile the RAG service uses for plan/country-based access control
+  const userProfile = {
+    country: user?.country ?? null,
+    plan_type: subscription.planType,
+    category
+  };
+
+  // Get AI response. New chat => no prior history. If the call fails, roll back
+  // the empty chat we just created so it does not linger as an orphan.
+  let aiResponse;
+  try {
+    aiResponse = await askAI({
+      query: message,
+      sessionId: chat.id,
+      userProfile,
+      chatHistory: []
+    });
+  } catch (error) {
+    await prisma.chat.delete({ where: { id: chat.id } }).catch(() => {});
+    throw error;
+  }
 
   // Create user's message
   const userMessage = await prisma.message.create({
@@ -111,13 +136,14 @@ exports.sendMessage = async (userId, message, perspective = null) => {
     }
   });
 
-  // Create AI's response message
+  // Create AI's response message (store citations from the RAG service in metadata)
   const assistantMessage = await prisma.message.create({
     data: {
       chatId: chat.id,
       role: 'assistant',
       content: aiResponse.answer,
-      category: category  // Track which perspective/category this response used
+      category: category,  // Track which perspective/category this response used
+      metadata: { citations: aiResponse.citations }
     }
   });
 
@@ -190,8 +216,40 @@ exports.addMessageToExistingChat = async (chatId, userId, message, perspective =
     }
   }
 
-  // Get AI response (pass category so AI knows the perspective)
-  const aiResponse = await askAI(message, responseCategory);
+  // Load the user's country for the RAG user profile
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { country: true }
+  });
+
+  // Build chat history (prior turns) so the RAG service has conversational context.
+  // Fetched before the new message is saved, so it contains only earlier turns.
+  // Capped to the most recent 10 messages to keep requests bounded (prevents the
+  // payload from growing without limit and eventually exceeding the model's context).
+  const HISTORY_LIMIT = 10;
+  const priorMessages = await prisma.message.findMany({
+    where: { chatId },
+    orderBy: { createdAt: 'desc' }, // newest first, so `take` keeps the most recent
+    take: HISTORY_LIMIT,
+    select: { role: true, content: true }
+  });
+  priorMessages.reverse(); // back to chronological order (oldest -> newest) for the RAG
+  const chatHistory = priorMessages.map((m) => ({ role: m.role, content: m.content }));
+
+  // Profile the RAG service uses for plan/country-based access control
+  const userProfile = {
+    country: user?.country ?? null,
+    plan_type: subscription?.planType ?? null,
+    category: responseCategory
+  };
+
+  // Get AI response. Reuse the chat id as the session id so the RAG keeps continuity.
+  const aiResponse = await askAI({
+    query: message,
+    sessionId: chatId,
+    userProfile,
+    chatHistory
+  });
 
   // Create user's message
   const userMessage = await prisma.message.create({
@@ -203,13 +261,14 @@ exports.addMessageToExistingChat = async (chatId, userId, message, perspective =
     }
   });
 
-  // Create AI's response message
+  // Create AI's response message (store citations from the RAG service in metadata)
   const assistantMessage = await prisma.message.create({
     data: {
       chatId,
       role: 'assistant',
       content: aiResponse.answer,
-      category: responseCategory  // Track which perspective/category this response used
+      category: responseCategory,  // Track which perspective/category this response used
+      metadata: { citations: aiResponse.citations }
     }
   });
 

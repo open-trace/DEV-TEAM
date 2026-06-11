@@ -8,18 +8,18 @@ const { blacklistToken } = require('../utils/tokenUtils');
 const signup = async (req, res) => {
   try {
     // Extract data from request body
-    const { email, password, name } = req.body;
+    const { email, password, name, country } = req.body;
 
     // Validate required fields
-    if (!email || !password) {
+    if (!email || !password || !country) {
       return res.status(400).json({
         success: false,
-        message: 'Email and password are required'
+        message: 'Email, password, and country are required'
       });
     }
 
     // Call service to register user
-    const result = await registerUser(email, password, name);
+    const result = await registerUser(email, password, name, country);
 
     // Send appropriate response based on result
     if (result.success) {

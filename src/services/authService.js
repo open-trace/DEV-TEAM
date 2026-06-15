@@ -145,6 +145,7 @@ const loginUser = async (email, password) => {
         id: user.id,
         email: user.email,
         name: user.name,
+        country: user.country,
         createdAt: user.createdAt
       },
       message: 'Login successful'

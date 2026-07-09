@@ -1,5 +1,5 @@
 const authService = require('../services/authService');
-const { getUserSettings, updateUserSettings } = require('../services/userService');
+const { getUserSettings, updateUserSettings, setUserCountry } = require('../services/userService');
 const { isValidEmail, isValidPassword, isValidName } = require('../utils/validators');
 
 /**
@@ -61,17 +61,20 @@ exports.updateProfile = async (req, res) => {
  */
 exports.deleteAccount = async (req, res) => {
   try {
-    const { password } = req.body;
+    // Password confirms email/password (or linked) accounts; a fresh Google
+    // token (idToken/credential) confirms social-only accounts.
+    const { password, idToken, credential } = req.body;
     const userId = req.user.id;
+    const googleToken = idToken || credential;
 
-    // Validate password is provided
-    if (!password) {
-      return res.status(400).json({ error: 'Password is required to delete account' });
+    // Require at least one form of confirmation
+    if (!password && !googleToken) {
+      return res.status(400).json({ error: 'Password or Google confirmation is required to delete account' });
     }
 
-    // Delete account (verifies password first)
-    const result = await authService.deleteUser(userId, password);
-    
+    // Delete account (verifies identity first)
+    const result = await authService.deleteUser(userId, { password, idToken: googleToken });
+
     if (!result.success) {
       return res.status(401).json({ error: result.message });
     }
@@ -80,6 +83,33 @@ exports.deleteAccount = async (req, res) => {
   } catch (error) {
     console.error('Delete account error:', error);
     res.status(500).json({ error: 'Failed to delete account' });
+  }
+};
+
+/**
+ * Set current user's country (one-time; used by social-login users)
+ * @route PATCH /api/users/country
+ * @access Protected
+ */
+exports.setCountry = async (req, res) => {
+  try {
+    const { country } = req.body;
+    const userId = req.user.id;
+
+    if (!country) {
+      return res.status(400).json({ error: 'Country is required' });
+    }
+
+    const result = await setUserCountry(userId, country);
+
+    if (!result.success) {
+      return res.status(400).json({ error: result.message });
+    }
+
+    res.status(200).json(result);
+  } catch (error) {
+    console.error('Set country error:', error);
+    res.status(500).json({ error: 'Failed to set country' });
   }
 };
 

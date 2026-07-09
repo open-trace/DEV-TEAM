@@ -1,6 +1,6 @@
 const router = require('express').Router();
 const auth = require('../middleware/authMiddleware');
-const { getProfile, updateProfile, deleteAccount, getSettings, updateSettings } = require('../controllers/userController');
+const { getProfile, updateProfile, deleteAccount, setCountry, getSettings, updateSettings } = require('../controllers/userController');
 
 /**
  * @route   GET /api/users/me
@@ -22,6 +22,13 @@ router.put('/me', auth, updateProfile);
  * @access  Protected (requires authentication)
  */
 router.delete('/me', auth, deleteAccount);
+
+/**
+ * @route   PATCH /api/users/country
+ * @desc    Set the current user's country (one-time; for social-login users)
+ * @access  Protected (requires authentication)
+ */
+router.patch('/country', auth, setCountry);
 
 /**
  * @route   GET /api/users/settings

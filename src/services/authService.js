@@ -1,10 +1,49 @@
 const bcrypt = require('bcryptjs');
 const { PrismaClient } = require('@prisma/client');
+const { OAuth2Client } = require('google-auth-library');
 const { generateToken, generateVerificationToken, getVerificationTokenExpiry } = require('../utils/tokenUtils');
 const { isValidEmail, isValidPassword, isValidName, normalizeCountry } = require('../utils/validators');
 const { sendVerificationEmail, sendPasswordResetEmail } = require('./emailService');
 
 const prisma = new PrismaClient();
+
+// Google OAuth client IDs allowed to authenticate (comma-separated to support
+// multiple platforms later, e.g. web + Android + iOS). A token is accepted only
+// if its `aud` claim matches one of these.
+const googleClientIds = (process.env.GOOGLE_CLIENT_ID || '')
+  .split(',')
+  .map((id) => id.trim())
+  .filter(Boolean);
+
+const googleOAuthClient = new OAuth2Client();
+
+/**
+ * Verify a Google ID token against our allowed client IDs.
+ * Shared by Google sign-in and by social-account deletion confirmation.
+ * @param {string} idToken - Google ID token from the frontend
+ * @returns {object} { success, payload, message }
+ */
+const verifyGoogleToken = async (idToken) => {
+  if (!idToken) {
+    return { success: false, message: 'Google ID token is required' };
+  }
+
+  if (googleClientIds.length === 0) {
+    console.error('GOOGLE_CLIENT_ID is not configured');
+    return { success: false, message: 'Google sign-in is not configured' };
+  }
+
+  try {
+    const ticket = await googleOAuthClient.verifyIdToken({
+      idToken,
+      audience: googleClientIds
+    });
+    return { success: true, payload: ticket.getPayload() };
+  } catch (verifyError) {
+    console.error('Google token verification failed:', verifyError.message);
+    return { success: false, message: 'Invalid or expired Google token' };
+  }
+};
 
 /**
  * Register a new user
@@ -127,6 +166,12 @@ const loginUser = async (email, password) => {
       return { success: false, message: 'Please verify your email before logging in' };
     }
 
+    // Social-login accounts (e.g. Google) have no password stored. Guide them to
+    // the correct sign-in method instead of attempting a password comparison.
+    if (!user.password) {
+      return { success: false, message: 'This account uses Google sign-in. Please continue with Google.' };
+    }
+
     // Compare passwords
     const isPasswordValid = await bcrypt.compare(password, user.password);
 
@@ -214,12 +259,15 @@ const updateUser = async (userId, updates) => {
 };
 
 /**
- * Delete user account
+ * Delete user account. Identity is re-confirmed before this irreversible action:
+ *  - Password-based accounts (local or linked) confirm with their password.
+ *  - Social-only accounts (no password) confirm with a fresh Google ID token
+ *    whose `sub` must match the account's stored googleId.
  * @param {string} userId - User's ID
- * @param {string} password - User's password for confirmation
+ * @param {object} confirmation - { password, idToken }
  * @returns {object} { success, message }
  */
-const deleteUser = async (userId, password) => {
+const deleteUser = async (userId, { password, idToken } = {}) => {
   try {
     // Get user from database
     const user = await prisma.user.findUnique({
@@ -230,11 +278,35 @@ const deleteUser = async (userId, password) => {
       return { success: false, message: 'User not found' };
     }
 
-    // Verify password
-    const isPasswordValid = await bcrypt.compare(password, user.password);
+    if (user.password) {
+      // Password-based account (email/password, or a social account that later
+      // added a password): confirm with the password.
+      if (!password) {
+        return { success: false, message: 'Password is required to delete account' };
+      }
 
-    if (!isPasswordValid) {
-      return { success: false, message: 'Incorrect password' };
+      const isPasswordValid = await bcrypt.compare(password, user.password);
+      if (!isPasswordValid) {
+        return { success: false, message: 'Incorrect password' };
+      }
+    } else if (user.googleId) {
+      // Social-only account: re-authenticate with a fresh Google token and make
+      // sure it belongs to the same Google account.
+      if (!idToken) {
+        return { success: false, message: 'Google confirmation is required to delete this account' };
+      }
+
+      const verification = await verifyGoogleToken(idToken);
+      if (!verification.success) {
+        return { success: false, message: verification.message };
+      }
+
+      if (verification.payload.sub !== user.googleId) {
+        return { success: false, message: 'Google account does not match this account' };
+      }
+    } else {
+      // Neither a password nor a linked Google account — no way to confirm.
+      return { success: false, message: 'Unable to verify identity for this account' };
     }
 
     // Delete user (chats and messages will cascade delete)
@@ -471,6 +543,101 @@ const resetUserPassword = async (resetToken, newPassword) => {
   }
 };
 
+/**
+ * Authenticate (or register) a user via a Google ID token.
+ *
+ * Flow:
+ *  1. Cryptographically verify the ID token against our allowed client IDs.
+ *  2. Require Google to have verified the email (email_verified === true).
+ *  3. Find-or-create:
+ *     - match by googleId  -> log in existing Google user
+ *     - match by email     -> auto-link Google to the existing account
+ *     - no match           -> create a new social account (no password,
+ *                             country null until the user sets it)
+ *
+ * @param {string} idToken - Google ID token sent by the frontend
+ * @returns {object} { success, token, user, profileComplete, message }
+ */
+const socialLoginGoogle = async (idToken) => {
+  try {
+    // Verify the token signature, expiry, issuer and audience against Google.
+    const verification = await verifyGoogleToken(idToken);
+    if (!verification.success) {
+      return { success: false, message: verification.message };
+    }
+    const payload = verification.payload;
+
+    const googleId = payload.sub;
+    const email = payload.email ? payload.email.toLowerCase() : null;
+    const emailVerified = payload.email_verified === true;
+    const name = payload.name || null;
+
+    if (!googleId || !email) {
+      return { success: false, message: 'Google account is missing required profile information' };
+    }
+
+    // Only trust the email if Google itself verified it. This also protects
+    // account auto-linking from being abused with an unverified address.
+    if (!emailVerified) {
+      return { success: false, message: 'Your Google email is not verified. Please use a verified Google account.' };
+    }
+
+    // 1. Existing Google user (already linked)?
+    let user = await prisma.user.findUnique({ where: { googleId } });
+
+    // 2. Otherwise, an existing account with the same email -> link it.
+    if (!user) {
+      const existingByEmail = await prisma.user.findUnique({ where: { email } });
+
+      if (existingByEmail) {
+        user = await prisma.user.update({
+          where: { id: existingByEmail.id },
+          data: {
+            googleId,
+            // Google has verified this email, so mark it verified if it wasn't.
+            emailVerified: true
+          }
+        });
+      } else {
+        // 3. Brand new social user. No password; country stays null until the
+        // user sets it (enforced later by the country gate). emailVerified is
+        // true because Google vouched for the address.
+        user = await prisma.user.create({
+          data: {
+            email,
+            name,
+            provider: 'google',
+            googleId,
+            emailVerified: true,
+            password: null,
+            country: null
+          }
+        });
+      }
+    }
+
+    const token = generateToken(user.id);
+
+    return {
+      success: true,
+      token,
+      user: {
+        id: user.id,
+        email: user.email,
+        name: user.name,
+        country: user.country,
+        createdAt: user.createdAt
+      },
+      // Frontend uses this to decide whether to show the "choose country" step.
+      profileComplete: Boolean(user.country),
+      message: 'Google sign-in successful'
+    };
+  } catch (error) {
+    console.error('Google sign-in error:', error);
+    return { success: false, message: 'Google sign-in failed. Please try again.' };
+  }
+};
+
 module.exports = {
   registerUser,
   loginUser,
@@ -479,5 +646,6 @@ module.exports = {
   verifyEmail,
   resendVerificationEmail,
   requestPasswordReset,
-  resetUserPassword
+  resetUserPassword,
+  socialLoginGoogle
 };

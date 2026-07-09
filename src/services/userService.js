@@ -1,4 +1,5 @@
 const { PrismaClient } = require('@prisma/client');
+const { normalizeCountry } = require('../utils/validators');
 
 const prisma = new PrismaClient();
 
@@ -131,8 +132,61 @@ const updateUserSettings = async (userId, updates) => {
   }
 };
 
+/**
+ * Set the user's country. Country is set once (typically by social-login users
+ * whose country is null after sign-in) and can never be changed afterwards.
+ * @param {string} userId - User's ID
+ * @param {string} country - Country name or ISO code to set
+ * @returns {object} { success, message, user }
+ */
+const setUserCountry = async (userId, country) => {
+  try {
+    // Validate/normalise the country against the recognised ISO list
+    const canonicalCountry = normalizeCountry(country);
+    if (!canonicalCountry) {
+      return { success: false, message: 'A valid country is required' };
+    }
+
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true, country: true }
+    });
+
+    if (!user) {
+      return { success: false, message: 'User not found' };
+    }
+
+    // Enforce "set once, never updated"
+    if (user.country) {
+      return { success: false, message: 'Country is already set and cannot be changed' };
+    }
+
+    const updatedUser = await prisma.user.update({
+      where: { id: userId },
+      data: { country: canonicalCountry },
+      select: {
+        id: true,
+        email: true,
+        name: true,
+        country: true,
+        createdAt: true
+      }
+    });
+
+    return {
+      success: true,
+      message: 'Country set successfully',
+      user: updatedUser
+    };
+  } catch (error) {
+    console.error('Set country error:', error);
+    return { success: false, message: 'Failed to set country' };
+  }
+};
+
 module.exports = {
   defaultSettings,
   getUserSettings,
-  updateUserSettings
+  updateUserSettings,
+  setUserCountry
 };

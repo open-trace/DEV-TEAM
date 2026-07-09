@@ -1,5 +1,5 @@
 const express = require('express');
-const { signup, login, logout, verifyEmailAddress, resendVerification, forgotPassword, resetPassword } = require('../controllers/authController');
+const { signup, login, googleSignIn, logout, verifyEmailAddress, resendVerification, forgotPassword, resetPassword } = require('../controllers/authController');
 const auth = require('../middleware/authMiddleware');
 
 const router = express.Router();
@@ -17,6 +17,13 @@ router.post('/signup', signup);
  * @access  Public
  */
 router.post('/login', login);
+
+/**
+ * @route   POST /api/auth/google
+ * @desc    Sign in (or register) a user with a Google ID token
+ * @access  Public
+ */
+router.post('/google', googleSignIn);
 
 /**
  * @route   GET /api/auth/verify-email

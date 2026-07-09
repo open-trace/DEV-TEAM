@@ -1,4 +1,4 @@
-const { registerUser, loginUser, verifyEmail, resendVerificationEmail, requestPasswordReset, resetUserPassword } = require('../services/authService');
+const { registerUser, loginUser, verifyEmail, resendVerificationEmail, requestPasswordReset, resetUserPassword, socialLoginGoogle } = require('../services/authService');
 const { blacklistToken } = require('../utils/tokenUtils');
 
 /**
@@ -69,6 +69,39 @@ const login = async (req, res) => {
     return res.status(500).json({
       success: false,
       message: 'Server error during login'
+    });
+  }
+};
+
+/**
+ * Handle Google sign-in (registers a new user or logs in an existing one)
+ * @route POST /api/auth/google
+ */
+const googleSignIn = async (req, res) => {
+  try {
+    // Accept either `idToken` or `credential` (Google Identity Services uses `credential`)
+    const { idToken, credential } = req.body;
+    const token = idToken || credential;
+
+    if (!token) {
+      return res.status(400).json({
+        success: false,
+        message: 'Google ID token is required'
+      });
+    }
+
+    const result = await socialLoginGoogle(token);
+
+    if (result.success) {
+      return res.status(200).json(result);
+    }
+
+    return res.status(401).json(result);
+  } catch (error) {
+    console.error('Google sign-in controller error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Server error during Google sign-in'
     });
   }
 };
@@ -230,6 +263,7 @@ const resetPassword = async (req, res) => {
 module.exports = {
   signup,
   login,
+  googleSignIn,
   logout,
   verifyEmailAddress,
   resendVerification,

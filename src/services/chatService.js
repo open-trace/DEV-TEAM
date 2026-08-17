@@ -68,6 +68,33 @@ const buildAssistantMetadata = (aiResponse, memoryMode) => ({
 });
 
 /**
+ * Strip the signed storage URL from a message's artifacts before it leaves.
+ *
+ * That URL is effectively a bearer token: anyone holding it can download the
+ * file with no login, and it expires within days. Clients download through
+ * /messages/:id/artifacts/:artifactId/download instead, which checks ownership
+ * and reports expiry properly. The database keeps the URL for that route to
+ * redirect to; only the API response drops it.
+ *
+ * @param {object} message - Message record
+ * @returns {object} Message with artifact URLs removed
+ */
+const toClientMessage = (message) => {
+  const artifacts = message.metadata?.artifacts;
+  if (!Array.isArray(artifacts) || artifacts.length === 0) {
+    return message; // Nothing to strip, so avoid copying the message
+  }
+
+  return {
+    ...message,
+    metadata: {
+      ...message.metadata,
+      artifacts: artifacts.map(({ url, ...artifact }) => artifact)
+    }
+  };
+};
+
+/**
  * Strip internals from a message before it leaves over a public share link.
  *
  * A shared chat is readable by anyone holding the token, so the evidence behind
@@ -155,7 +182,11 @@ exports.getChatWithMessages = async (chatId, userId) => {
     }
   });
 
-  return chat;
+  if (!chat) {
+    return null; // Chat not found or unauthorized
+  }
+
+  return { ...chat, messages: chat.messages.map(toClientMessage) };
 };
 
 /**
@@ -262,7 +293,7 @@ exports.sendMessage = async (userId, message, perspective = null) => {
     category: chat.category,
     userId: chat.userId,
     createdAt: chat.createdAt,
-    messages: [userMessage, assistantMessage],
+    messages: [userMessage, assistantMessage].map(toClientMessage),
     tokenUsage: aiResponse.usage
   };
 };
@@ -413,6 +444,7 @@ exports.addMessageToExistingChat = async (chatId, userId, message, perspective =
 
   return {
     ...updatedChat,
+    messages: updatedChat.messages.map(toClientMessage),
     tokenUsage: aiResponse.usage
   };
 };

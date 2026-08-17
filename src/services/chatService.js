@@ -1,7 +1,110 @@
 const crypto = require('node:crypto');
 const prisma = require('../utils/prismaClient');
-const { askAI } = require('./aiService');
+const { askAI, deleteSession, isSessionLikelyExpired, submitFeedback } = require('./aiService');
 const subscriptionService = require('./subscriptionService');
+
+// Perspectives an answer can be written from. Mirrors the RAG's category enum.
+const VALID_PERSPECTIVES = ['Government', 'NGOs', 'Agribusinesses', 'Farmers'];
+
+// How many prior turns to replay when the RAG's session memory has expired.
+const HISTORY_LIMIT = 20;
+
+// Debug switch: ask the RAG for retrieval/decomposition counts and log them.
+const INCLUDE_TRACE = process.env.AI_INCLUDE_TRACE === '1';
+
+// How long an artifact's signed download URL stays valid. Signed GCS/S3 URLs
+// cannot be issued for longer than 7 days, and we cannot refresh them, so this
+// is the ceiling. Lower it to match if the data team signs for less.
+const ARTIFACT_URL_TTL_MS =
+  Number(process.env.AI_ARTIFACT_URL_TTL_SECONDS ?? 604800) * 1000;
+
+exports.VALID_PERSPECTIVES = VALID_PERSPECTIVES;
+
+const logTrace = (chatId, trace) => {
+  if (trace) {
+    console.log(`RAG trace for chat ${chatId}:`, JSON.stringify(trace));
+  }
+};
+
+/**
+ * Decide how to carry conversation context into the next RAG call.
+ *
+ * The RAG's own session memory is preferred: it summarises the whole
+ * conversation server-side, so we send less and it remembers more. But once a
+ * chat has been quiet longer than the session TTL that memory is gone, and
+ * because the RAG stops updating a session the moment chat_history is sent, it
+ * can never be refilled. So a chat that goes cold once stays on replayed
+ * history from then on.
+ *
+ * @param {object|null} lastAssistantMessage - Latest assistant reply, or null
+ * @returns {'session'|'history'} Which mode the next call should use
+ */
+const resolveMemoryMode = (lastAssistantMessage) => {
+  // Chats that predate this field never had a live server session.
+  if (lastAssistantMessage?.metadata?.memoryMode !== 'session') {
+    return 'history';
+  }
+
+  return isSessionLikelyExpired(lastAssistantMessage.createdAt) ? 'history' : 'session';
+};
+
+/**
+ * Everything worth keeping from a RAG answer, stored on the assistant message.
+ *
+ * @param {object} aiResponse - Result of askAI
+ * @param {'session'|'history'} memoryMode - Mode that produced this turn
+ */
+const buildAssistantMetadata = (aiResponse, memoryMode) => ({
+  citations: aiResponse.citations,
+  // Confidence band/score/explanation for this answer.
+  acf: aiResponse.acf,
+  artifacts: aiResponse.artifacts,
+  // Artifact download URLs are signed and expire, so record when we got them.
+  artifactsFetchedAt: aiResponse.artifacts.length > 0 ? new Date().toISOString() : null,
+  // Needed to attach thumbs up/down feedback to this answer later.
+  langfuseTraceId: aiResponse.langfuseTraceId,
+  // Drives the next turn's memory decision - see resolveMemoryMode.
+  memoryMode
+});
+
+/**
+ * Strip internals from a message before it leaves over a public share link.
+ *
+ * A shared chat is readable by anyone holding the token, so the evidence behind
+ * an answer stays (citations, confidence) but everything operational goes:
+ * artifact downloads are a paid-plan feature whose signed URLs would bypass our
+ * access control, and the Langfuse trace id would let a stranger file feedback
+ * against someone else's conversation.
+ *
+ * @param {object} message - Message record
+ * @returns {object} Message safe to expose publicly
+ */
+const toPublicMessage = (message) => ({
+  id: message.id,
+  role: message.role,
+  content: message.content,
+  category: message.category,
+  createdAt: message.createdAt,
+  metadata: message.metadata
+    ? {
+        citations: message.metadata.citations ?? [],
+        acf: message.metadata.acf ?? null
+      }
+    : null
+});
+
+/**
+ * The RAG echoes back the session id we send. If it ever returns a different
+ * one, our chat id is no longer the session key and continuity is silently
+ * broken, so make that visible rather than letting answers lose context.
+ */
+const warnOnSessionMismatch = (chatId, aiResponse, memoryMode) => {
+  if (memoryMode === 'session' && aiResponse.sessionId && aiResponse.sessionId !== chatId) {
+    console.warn(
+      `RAG returned session ${aiResponse.sessionId} for chat ${chatId}; conversation memory may not persist.`
+    );
+  }
+};
 
 /**
  * Get all chats for a user
@@ -80,10 +183,9 @@ exports.sendMessage = async (userId, message, perspective = null) => {
 
   // For Free and Integrated users, allow optional perspective parameter or default to Government
   if (subscription.planType === 'Free' || subscription.planType === 'Integrated') {
-    const validPerspectives = ['Government', 'NGOs', 'Agribusinesses', 'Farmers'];
     const selectedPerspective = perspective || 'Government'; // Default to Government if not specified
 
-    if (!validPerspectives.includes(selectedPerspective)) {
+    if (!VALID_PERSPECTIVES.includes(selectedPerspective)) {
       throw new Error(`Invalid perspective: ${selectedPerspective}`);
     }
     category = selectedPerspective;
@@ -111,20 +213,26 @@ exports.sendMessage = async (userId, message, perspective = null) => {
     category
   };
 
-  // Get AI response. New chat => no prior history. If the call fails, roll back
-  // the empty chat we just created so it does not linger as an orphan.
+  // Get AI response. A new chat has no prior turns, so this opens a server-side
+  // session keyed on the chat id. If the call fails, roll back the empty chat we
+  // just created so it does not linger as an orphan.
   let aiResponse;
   try {
     aiResponse = await askAI({
       query: message,
-      sessionId: chat.id,
+      planType: subscription.planType,
       userProfile,
-      chatHistory: []
+      sessionId: chat.id,
+      userId,
+      includeTrace: INCLUDE_TRACE
     });
   } catch (error) {
     await prisma.chat.delete({ where: { id: chat.id } }).catch(() => {});
     throw error;
   }
+
+  logTrace(chat.id, aiResponse.trace);
+  warnOnSessionMismatch(chat.id, aiResponse, 'session');
 
   // Create user's message
   const userMessage = await prisma.message.create({
@@ -143,7 +251,7 @@ exports.sendMessage = async (userId, message, perspective = null) => {
       role: 'assistant',
       content: aiResponse.answer,
       category: category,  // Track which perspective/category this response used
-      metadata: { citations: aiResponse.citations }
+      metadata: buildAssistantMetadata(aiResponse, 'session')
     }
   });
 
@@ -186,16 +294,19 @@ exports.addMessageToExistingChat = async (chatId, userId, message, perspective =
     return null; // Chat not found or unauthorized
   }
 
-  // Get subscription to check plan type
+  // Get subscription to check plan type. The RAG requires a valid plan_type on
+  // every request, and it selects which endpoint we call, so a missing
+  // subscription has to fail here rather than upstream.
   const subscription = await subscriptionService.getCurrentSubscription(userId);
+  if (!subscription) {
+    throw new Error('No subscription found. Please select a plan first.');
+  }
 
   // For Free and Integrated users, allow perspective override; otherwise keep the chat's existing category
   let responseCategory = chat.category;
-  if (subscription && (subscription.planType === 'Free' || subscription.planType === 'Integrated')) {
-    const validPerspectives = ['Government', 'NGOs', 'Agribusinesses', 'Farmers'];
-
+  if (subscription.planType === 'Free' || subscription.planType === 'Integrated') {
     if (perspective) {
-      if (!validPerspectives.includes(perspective)) {
+      if (!VALID_PERSPECTIVES.includes(perspective)) {
         throw new Error(`Invalid perspective: ${perspective}`);
       }
 
@@ -222,34 +333,52 @@ exports.addMessageToExistingChat = async (chatId, userId, message, perspective =
     select: { country: true }
   });
 
-  // Build chat history (prior turns) so the RAG service has conversational context.
-  // Fetched before the new message is saved, so it contains only earlier turns.
-  // Capped to the most recent 10 messages to keep requests bounded (prevents the
-  // payload from growing without limit and eventually exceeding the model's context).
-  const HISTORY_LIMIT = 10;
-  const priorMessages = await prisma.message.findMany({
-    where: { chatId },
-    orderBy: { createdAt: 'desc' }, // newest first, so `take` keeps the most recent
-    take: HISTORY_LIMIT,
-    select: { role: true, content: true }
+  // Work out whether the RAG still holds this conversation, or whether we have
+  // to replay it ourselves. Based on the last answer, since that is when the
+  // server-side session was last touched.
+  const lastAssistantMessage = await prisma.message.findFirst({
+    where: { chatId, role: 'assistant' },
+    orderBy: { createdAt: 'desc' },
+    select: { createdAt: true, metadata: true }
   });
-  priorMessages.reverse(); // back to chronological order (oldest -> newest) for the RAG
-  const chatHistory = priorMessages.map((m) => ({ role: m.role, content: m.content }));
+  const memoryMode = resolveMemoryMode(lastAssistantMessage);
+
+  // Only build history when the session is gone; otherwise the RAG has better
+  // context than we could send, and sending history would stop it updating.
+  // Fetched before the new message is saved, so it holds only earlier turns,
+  // and capped so the payload cannot grow past the model's context window.
+  let chatHistory = null;
+  if (memoryMode === 'history') {
+    const priorMessages = await prisma.message.findMany({
+      where: { chatId },
+      orderBy: { createdAt: 'desc' }, // newest first, so `take` keeps the most recent
+      take: HISTORY_LIMIT,
+      select: { role: true, content: true }
+    });
+    priorMessages.reverse(); // back to chronological order (oldest -> newest) for the RAG
+    chatHistory = priorMessages.map((m) => ({ role: m.role, content: m.content }));
+  }
 
   // Profile the RAG service uses for plan/country-based access control
   const userProfile = {
     country: user?.country ?? null,
-    plan_type: subscription?.planType ?? null,
+    plan_type: subscription.planType,
     category: responseCategory
   };
 
-  // Get AI response. Reuse the chat id as the session id so the RAG keeps continuity.
+  // Get AI response, carrying context whichever way is still available.
   const aiResponse = await askAI({
     query: message,
-    sessionId: chatId,
+    planType: subscription.planType,
     userProfile,
-    chatHistory
+    sessionId: memoryMode === 'session' ? chatId : null,
+    chatHistory,
+    userId,
+    includeTrace: INCLUDE_TRACE
   });
+
+  logTrace(chatId, aiResponse.trace);
+  warnOnSessionMismatch(chatId, aiResponse, memoryMode);
 
   // Create user's message
   const userMessage = await prisma.message.create({
@@ -268,7 +397,7 @@ exports.addMessageToExistingChat = async (chatId, userId, message, perspective =
       role: 'assistant',
       content: aiResponse.answer,
       category: responseCategory,  // Track which perspective/category this response used
-      metadata: { citations: aiResponse.citations }
+      metadata: buildAssistantMetadata(aiResponse, memoryMode)
     }
   });
 
@@ -286,6 +415,89 @@ exports.addMessageToExistingChat = async (chatId, userId, message, perspective =
     ...updatedChat,
     tokenUsage: aiResponse.usage
   };
+};
+
+/**
+ * Record a user's thumbs up/down on an AI answer.
+ *
+ * Sends the rating to the RAG against that answer's Langfuse trace, and stores
+ * it on the message so reopening the chat shows what the user already voted.
+ *
+ * @param {string} messageId - Assistant message being rated
+ * @param {string} userId - User's ID (for authorization)
+ * @param {number} score - 1 for thumbs up, 0 for thumbs down
+ * @param {string|null} [comment] - Optional note
+ * @returns {object|null} The stored feedback, or null if not found/unauthorized
+ */
+exports.submitMessageFeedback = async (messageId, userId, score, comment = null) => {
+  // Match on the owning chat's user so one person cannot rate another's answers
+  const message = await prisma.message.findFirst({
+    where: { id: messageId, chat: { userId } },
+    select: { id: true, role: true, metadata: true }
+  });
+
+  if (!message) {
+    return null; // Message not found, or it belongs to someone else
+  }
+
+  if (message.role !== 'assistant') {
+    throw new Error('Feedback can only be given on AI answers');
+  }
+
+  // Answers from before we stored trace ids cannot be rated: the RAG identifies
+  // feedback by trace, and we have no other handle on that answer.
+  const traceId = message.metadata?.langfuseTraceId;
+  if (!traceId) {
+    throw new Error('This answer cannot be rated');
+  }
+
+  // Send upstream first: if the RAG rejects it, nothing is recorded our side
+  await submitFeedback({ traceId, score, comment });
+
+  const feedback = { score, comment, submittedAt: new Date().toISOString() };
+  await prisma.message.update({
+    where: { id: messageId },
+    data: { metadata: { ...message.metadata, feedback } }
+  });
+
+  return feedback;
+};
+
+/**
+ * Look up a downloadable export attached to an AI answer.
+ *
+ * Reports expiry rather than hiding it, so the caller can tell the user their
+ * download has lapsed instead of sending them to a dead storage link.
+ *
+ * @param {string} messageId - Message the export belongs to
+ * @param {string} artifactId - Artifact id from the answer's metadata
+ * @param {string} userId - User's ID (for authorization)
+ * @returns {{artifact: object, expired: boolean}|null} Null if not found/unauthorized
+ */
+exports.getMessageArtifact = async (messageId, artifactId, userId) => {
+  // Match through the owning chat so exports stay private to their owner
+  const message = await prisma.message.findFirst({
+    where: { id: messageId, chat: { userId } },
+    select: { metadata: true }
+  });
+
+  if (!message) {
+    return null; // Message not found, or it belongs to someone else
+  }
+
+  const artifact = (message.metadata?.artifacts ?? []).find((item) => item.id === artifactId);
+  if (!artifact) {
+    return null;
+  }
+
+  // We cannot ask the storage provider whether a signed URL is still good - the
+  // signature covers the HTTP method, so probing it would fail even when valid.
+  // Judge from when we received it instead.
+  const fetchedAt = message.metadata?.artifactsFetchedAt;
+  const expired =
+    !fetchedAt || Date.now() - new Date(fetchedAt).getTime() > ARTIFACT_URL_TTL_MS;
+
+  return { artifact, expired };
 };
 
 /**
@@ -417,13 +629,14 @@ exports.getSharedChat = async (shareToken) => {
     throw new Error('Shared chat not found or no longer shared');
   }
 
-  // Return chat without sensitive data (userId not included in response)
+  // Return chat without sensitive data (userId not included in response, and
+  // message internals stripped - see toPublicMessage)
   return {
     id: chat.id,
     title: chat.title,
     category: chat.category,
     createdAt: chat.createdAt,
-    messages: chat.messages
+    messages: chat.messages.map(toPublicMessage)
   };
 };
 
@@ -450,6 +663,11 @@ exports.deleteChat = async (chatId, userId) => {
   await prisma.chat.delete({
     where: { id: chatId }
   });
+
+  // Drop the conversation from the RAG's memory too. Fire-and-forget: the chat
+  // is already gone on our side, so a slow or failing upstream cleanup must not
+  // hold up the response or make the delete look like it failed.
+  deleteSession(chatId).catch(() => {});
 
   return true;
 };

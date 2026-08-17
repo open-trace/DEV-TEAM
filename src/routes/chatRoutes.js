@@ -1,6 +1,6 @@
 const router = require('express').Router();
 const auth = require('../middleware/authMiddleware');
-const { sendChat, getAllChats, getChatById, addMessageToChat, deleteChat, updateChatTitle, archiveChat, unarchiveChat, shareChat, unshareChat, getSharedChat } = require('../controllers/chatController');
+const { sendChat, getAllChats, getChatById, addMessageToChat, deleteChat, updateChatTitle, archiveChat, unarchiveChat, shareChat, unshareChat, getSharedChat, submitMessageFeedback, downloadMessageArtifact } = require('../controllers/chatController');
 
 /**
  * @route   GET /api/chats/
@@ -29,6 +29,20 @@ router.post('/', auth, sendChat);
  * @access  Protected (requires authentication)
  */
 router.post('/:id/messages', auth, addMessageToChat);
+
+/**
+ * @route   POST /api/chats/messages/:messageId/feedback
+ * @desc    Record thumbs up/down on an AI answer
+ * @access  Protected (requires authentication)
+ */
+router.post('/messages/:messageId/feedback', auth, submitMessageFeedback);
+
+/**
+ * @route   GET /api/chats/messages/:messageId/artifacts/:artifactId/download
+ * @desc    Download an export (CSV/chart/DOCX/PDF) attached to an AI answer
+ * @access  Protected (requires authentication)
+ */
+router.get('/messages/:messageId/artifacts/:artifactId/download', auth, downloadMessageArtifact);
 
 /**
  * @route   POST /api/chats/:id/archive

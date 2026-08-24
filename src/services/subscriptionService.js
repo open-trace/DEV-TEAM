@@ -403,10 +403,11 @@ exports.selectPlan = async (userId, planType, billingFrequency = DEFAULT_BILLING
     return updatedSubscription;
   }
 
-  // If user has an ACTIVE subscription, they must use switchPlan
+  // If user has an ACTIVE subscription (including Free), plan changes go through
+  // POST /api/payments/upgrade rather than plan selection.
   if (existingSubscription?.status === "active") {
     throw new Error(
-      "You already have an active subscription. Use switchPlan to change plans.",
+      "You already have an active subscription. Use the upgrade option to change your plan.",
     );
   }
 
@@ -516,6 +517,13 @@ exports.isSubscriptionActive = async (userId) => {
 const resetMonthlyQueriesIfNeeded = async (subscription) => {
   // If no monthResetDate or monthResetDate is in the future, no reset needed
   if (!subscription.monthResetDate || new Date() < new Date(subscription.monthResetDate)) {
+    return subscription;
+  }
+
+  // Payment is failing: the retry window can straddle the reset date, and granting a
+  // fresh allowance mid-dunning would hand out a free month. They keep whatever is
+  // left, and the reset happens once payment succeeds and the plan reactivates.
+  if (subscription.status === "past_due") {
     return subscription;
   }
 

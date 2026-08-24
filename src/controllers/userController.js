@@ -82,6 +82,15 @@ exports.deleteAccount = async (req, res) => {
     res.status(200).json({ message: 'Account deleted successfully' });
   } catch (error) {
     console.error('Delete account error:', error);
+
+    // Billing could not be stopped, so the account was deliberately left in place.
+    // The user must know it still exists and is still being charged.
+    if (error.message.includes('payment provider')) {
+      return res.status(503).json({
+        error: 'We could not cancel your subscription with our payment provider, so your account has not been deleted and your subscription is still active. Please try again in a few minutes, or contact support.'
+      });
+    }
+
     res.status(500).json({ error: 'Failed to delete account' });
   }
 };

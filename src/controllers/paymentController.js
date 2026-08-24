@@ -28,7 +28,9 @@ exports.createPaymentIntent = async (req, res) => {
     );
 
     res.status(200).json({
-      message: 'Payment intent created',
+      message: paymentDetails.requiresPayment === false
+        ? 'Subscription activated from your existing Stripe balance'
+        : 'Payment intent created',
       ...paymentDetails
     });
   } catch (error) {

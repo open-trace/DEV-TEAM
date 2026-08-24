@@ -298,6 +298,88 @@ const activateSubscriptionFromStripePlan = async (subscription, stripeSubscripti
 };
 
 /**
+ * Stripe settles a subscription's first invoice immediately when nothing is due -
+ * for example when the customer's credit balance covers it in full. No PaymentIntent
+ * is created in that case, so there is no client secret to hand to the frontend.
+ * @param {object} stripeSubscription - Subscription object returned by Stripe
+ * @returns {boolean} True when the subscription is already paid up
+ */
+const isSubscriptionSettledWithoutPayment = (stripeSubscription) => {
+  if (!stripeSubscription) {
+    return false;
+  }
+
+  if (stripeSubscription.status !== 'active' && stripeSubscription.status !== 'trialing') {
+    return false;
+  }
+
+  const invoice = typeof stripeSubscription.latest_invoice === 'object'
+    ? stripeSubscription.latest_invoice
+    : null;
+
+  if (invoice && typeof invoice.amount_due === 'number' && invoice.amount_due > 0) {
+    return false;
+  }
+
+  return true;
+};
+
+/**
+ * Persist the Stripe IDs on the local subscription, then activate it from the Stripe
+ * plan. Used when Stripe has already settled the invoice and there is no payment for
+ * the user to confirm.
+ * @param {string} userId - User ID
+ * @param {string} stripeCustomerId - Stripe customer ID
+ * @param {string} stripeSubscriptionId - Stripe subscription ID
+ * @returns {object} Updated local subscription
+ */
+const activateSettledSubscription = async (userId, stripeCustomerId, stripeSubscriptionId) => {
+  const subscription = await prisma.subscription.update({
+    where: { userId },
+    data: {
+      stripeCustomerId,
+      stripeSubscriptionId,
+      updatedAt: new Date()
+    }
+  });
+
+  // Pass the ID rather than the object so the plan is re-read with price.product expanded.
+  return activateSubscriptionFromStripePlan(subscription, stripeSubscriptionId);
+};
+
+/**
+ * Return an account to the Free plan once its Stripe subscription has ended. Clears
+ * stripeSubscriptionId because no live Stripe subscription remains, but keeps
+ * stripeCustomerId so any remaining credit balance stays with the customer.
+ * @param {object} subscription - Local subscription record
+ * @param {Date} expiryDate - When the paid subscription ended
+ * @returns {object} Updated local subscription
+ */
+const revertSubscriptionToFree = async (subscription, expiryDate) => {
+  const freePlanConfig = subscriptionService.getPlanConfig('Free');
+
+  return prisma.subscription.update({
+    where: { id: subscription.id },
+    data: {
+      planType: 'Free',
+      billingFrequency: DEFAULT_BILLING_FREQUENCY,
+      price: freePlanConfig.price,
+      status: 'active',
+      startDate: new Date(),
+      renewalDate: null,
+      expiryDate,
+      queriesPerMonth: freePlanConfig.queriesPerMonth,
+      usageCreditsPerMonth: freePlanConfig.usageCreditsPerMonth,
+      queriesUsedThisMonth: 0,
+      usageCreditsUsedThisMonth: 0,
+      monthResetDate: subscriptionService.getNextMonthResetDate(),
+      stripeSubscriptionId: null,
+      updatedAt: new Date()
+    }
+  });
+};
+
+/**
  * Create a Stripe customer and subscription
  * @param {string} userId - User ID
  * @param {string} userEmail - User email
@@ -352,6 +434,25 @@ exports.createPaymentIntent = async (
     });
     const stripeSubscriptionId = stripeSubscription.id;
 
+    // Nothing left to pay (e.g. the credit balance covered the invoice): Stripe activates
+    // the subscription itself and never creates a PaymentIntent.
+    if (isSubscriptionSettledWithoutPayment(stripeSubscription)) {
+      const activatedSubscription = await activateSettledSubscription(
+        userId,
+        stripeCustomerId,
+        stripeSubscriptionId
+      );
+
+      return {
+        status: 'activated',
+        requiresPayment: false,
+        stripeCustomerId,
+        stripeSubscriptionId,
+        subscription: activatedSubscription,
+        publishableKey: process.env.STRIPE_PUBLISHABLE_KEY
+      };
+    }
+
     // Stripe can expose the invoice secret/payment intent asynchronously after subscription creation.
     const paymentDetails =
       (await resolvePaymentDetailsFromInvoice(stripeSubscription.latest_invoice)) ||
@@ -372,6 +473,8 @@ exports.createPaymentIntent = async (
 
     // Return payment details for frontend
     return {
+      status: 'requires_payment',
+      requiresPayment: true,
       stripeCustomerId,
       stripeSubscriptionId,
       clientSecret: paymentDetails.clientSecret,
@@ -458,14 +561,8 @@ exports.cancelStripeSubscription = async (userId) => {
         ? new Date(cancelledSubscription.ended_at * 1000)
         : new Date();
 
-      await prisma.subscription.update({
-        where: { userId },
-        data: {
-          status: 'cancelled',
-          expiryDate: expiresAt,
-          updatedAt: new Date()
-        }
-      });
+      // Stripe ended this subscription immediately, so drop straight back to Free.
+      await revertSubscriptionToFree(subscription, expiresAt);
 
       return {
         cancelAtPeriodEnd: false,
@@ -531,6 +628,46 @@ exports.cancelStripeSubscription = async (userId) => {
 };
 
 /**
+ * Cancel a user's Stripe subscription immediately because their account is being
+ * deleted. Deliberately does NOT delete the Stripe customer, so invoice history and
+ * any remaining credit balance survive. Unlike cancelStripeSubscription this does not
+ * revert the local row to Free - the row is about to be deleted - and it does not
+ * reject Free plans, which simply have nothing to cancel.
+ * @param {string} userId - User ID
+ * @returns {object} { cancelled, stripeSubscriptionId }
+ */
+exports.cancelSubscriptionForAccountDeletion = async (userId) => {
+  const subscription = await prisma.subscription.findUnique({
+    where: { userId }
+  });
+
+  if (!subscription?.stripeSubscriptionId) {
+    return { cancelled: false, stripeSubscriptionId: null };
+  }
+
+  const stripeSubscriptionId = subscription.stripeSubscriptionId;
+
+  try {
+    const stripeSubscription = await stripe.subscriptions.retrieve(stripeSubscriptionId);
+
+    if (stripeSubscription.status === 'canceled') {
+      return { cancelled: false, stripeSubscriptionId };
+    }
+
+    await stripe.subscriptions.cancel(stripeSubscriptionId);
+
+    return { cancelled: true, stripeSubscriptionId };
+  } catch (error) {
+    // Already gone at Stripe: there is nothing left to cancel, so deletion may proceed.
+    if (error?.code === 'resource_missing') {
+      return { cancelled: false, stripeSubscriptionId };
+    }
+
+    throw error;
+  }
+};
+
+/**
  * Upgrade or change subscription plan
  * @param {string} userId - User ID
  * @param {string} newPlanType - New plan type
@@ -543,8 +680,6 @@ exports.upgradeSubscription = async (userId, newPlanType, billingFrequency = nul
     if (!planConfig) {
       throw new Error(`Invalid plan type: ${newPlanType}`);
     }
-
-    const monthResetDate = subscriptionService.getNextMonthResetDate();
 
     const subscription = await prisma.subscription.findUnique({
       where: { userId }
@@ -572,8 +707,20 @@ exports.upgradeSubscription = async (userId, newPlanType, billingFrequency = nul
       throw new Error(`You are already on the ${newPlanType} ${billingOption.label} plan`);
     }
 
-    // CASE 1: Upgrading FROM Free plan (no stripeSubscriptionId)
-    if (subscription.planType === 'Free' || !subscription.stripeSubscriptionId) {
+    // Free is not purchasable. Leaving a paid plan happens through cancellation, which
+    // reverts the account to Free once the paid period ends.
+    if (newPlanType === 'Free') {
+      if (subscription.planType === 'Free') {
+        throw new Error('You are already on the Free plan');
+      }
+
+      throw new Error(
+        'Cannot switch to the Free plan directly. Cancel your subscription instead - your account returns to Free when the current billing period ends.'
+      );
+    }
+
+    // CASE 1: No live Stripe subscription exists yet - create one
+    if (!subscription.stripeSubscriptionId) {
       // Get user email for Stripe customer creation
       const user = await prisma.user.findUnique({
         where: { id: userId }
@@ -616,6 +763,21 @@ exports.upgradeSubscription = async (userId, newPlanType, billingFrequency = nul
       });
       const stripeSubscriptionId = stripeSubscription.id;
 
+      // Nothing left to pay (e.g. the credit balance covered the invoice): Stripe activates
+      // the subscription itself and never creates a PaymentIntent.
+      if (isSubscriptionSettledWithoutPayment(stripeSubscription)) {
+        const activatedSubscription = await activateSettledSubscription(
+          userId,
+          stripeCustomerId,
+          stripeSubscriptionId
+        );
+
+        return {
+          status: 'updated',
+          subscription: activatedSubscription
+        };
+      }
+
       // Get payment details
       const paymentDetails =
         (await resolvePaymentDetailsFromInvoice(stripeSubscription.latest_invoice)) ||
@@ -650,7 +812,7 @@ exports.upgradeSubscription = async (userId, newPlanType, billingFrequency = nul
       };
     }
 
-    // CASE 2: Upgrading between Paid plans (has stripeSubscriptionId)
+    // CASE 2: A live Stripe subscription exists - edit it in place
     const priceId = await getOrCreateStripePrice(newPlanType, billingOption);
 
     const currentStripeSubscription = await stripe.subscriptions.retrieve(
@@ -710,9 +872,8 @@ exports.upgradeSubscription = async (userId, newPlanType, billingFrequency = nul
         renewalDate,
         queriesPerMonth: planConfig.queriesPerMonth,
         usageCreditsPerMonth: planConfig.usageCreditsPerMonth,
-        queriesUsedThisMonth: 0,
-        usageCreditsUsedThisMonth: 0,
-        monthResetDate,
+        // Usage carries over. A mid-period plan change must not hand out a fresh
+        // allowance, or switching plans back and forth farms unlimited free quota.
         updatedAt: new Date()
       }
     });
@@ -974,7 +1135,6 @@ const handleSubscriptionUpdated = async (event) => {
   )) {
     // Get query tracking info for the new plan
     const planConfig = subscriptionService.getPlanConfig(planDetails.planType);
-    const monthResetDate = subscriptionService.getNextMonthResetDate();
 
     await prisma.subscription.update({
       where: { id: subscription.id },
@@ -982,13 +1142,15 @@ const handleSubscriptionUpdated = async (event) => {
         planType: planDetails.planType,
         billingFrequency: planDetails.billingFrequency || subscription.billingFrequency,
         price: planDetails.price ?? subscription.price,
-        status: 'active',
+        // Only Stripe decides whether the subscription is live. Previously this wrote
+        // 'active' unconditionally, which could un-suspend a past_due or unpaid account.
+        status: updatedSub.status === 'active' || updatedSub.status === 'trialing'
+          ? 'active'
+          : subscription.status,
         renewalDate: currentPeriodEnd,
         queriesPerMonth: planConfig ? planConfig.queriesPerMonth : subscription.queriesPerMonth,
         usageCreditsPerMonth: planConfig ? planConfig.usageCreditsPerMonth : subscription.usageCreditsPerMonth,
-        queriesUsedThisMonth: 0,
-        usageCreditsUsedThisMonth: 0,
-        monthResetDate,
+        // Usage carries over for the same reason as the plan change that triggered this.
         updatedAt: new Date()
       }
     });
@@ -1011,20 +1173,14 @@ const handleSubscriptionDeleted = async (event) => {
     return;
   }
 
-  if (subscription.status === 'cancelled') {
-    return;
-  }
+  // No status guard needed: the lookup above is by stripeSubscriptionId, which this
+  // revert clears, so a redelivered webhook finds no row and returns early by itself.
+  const expiresAt = deletedSub.ended_at
+    ? new Date(deletedSub.ended_at * 1000)
+    : new Date();
 
-  await prisma.subscription.update({
-    where: { id: subscription.id },
-    data: {
-      status: 'cancelled',
-      expiryDate: deletedSub.ended_at
-        ? new Date(deletedSub.ended_at * 1000)
-        : new Date()
-    }
-  });
-  console.log(`Subscription deleted: ${subscription.userId}`);
+  await revertSubscriptionToFree(subscription, expiresAt);
+  console.log(`Subscription ended, reverted to Free: ${subscription.userId}`);
 };
 
 /**

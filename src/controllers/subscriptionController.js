@@ -71,7 +71,10 @@ exports.selectPlan = async (req, res) => {
     if (error.message.includes("Invalid billing frequency")) {
       return res.status(400).json({ error: error.message });
     }
-    if (error.message.includes("Use switchPlan")) {
+    if (error.message.includes("already have an active subscription")) {
+      return res.status(400).json({ error: error.message });
+    }
+    if (error.message.includes("past-due subscription")) {
       return res.status(400).json({ error: error.message });
     }
     console.error("Select plan error - Full error:", error);

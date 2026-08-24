@@ -4,6 +4,7 @@ const { OAuth2Client } = require('google-auth-library');
 const { generateToken, generateVerificationToken, getVerificationTokenExpiry } = require('../utils/tokenUtils');
 const { isValidEmail, isValidPassword, isValidName, normalizeCountry } = require('../utils/validators');
 const { sendVerificationEmail, sendPasswordResetEmail } = require('./emailService');
+const stripeService = require('./stripeService');
 
 const prisma = new PrismaClient();
 
@@ -307,6 +308,24 @@ const deleteUser = async (userId, { password, idToken } = {}) => {
     } else {
       // Neither a password nor a linked Google account — no way to confirm.
       return { success: false, message: 'Unable to verify identity for this account' };
+    }
+
+    // Stop billing before the account disappears. If this fails we must NOT delete the
+    // user: doing so would destroy the only record of a subscription that is still
+    // charging their card, leaving them no way to cancel it.
+    try {
+      const cancellation = await stripeService.cancelSubscriptionForAccountDeletion(userId);
+
+      // Once the user row is gone this log is the only record on our side that the
+      // subscription was cancelled, so keep it even when there was nothing to cancel.
+      console.log(
+        cancellation.cancelled
+          ? `Account deletion cancelled Stripe subscription ${cancellation.stripeSubscriptionId} for user ${userId}`
+          : `Account deletion for user ${userId}: no live Stripe subscription to cancel`
+      );
+    } catch (stripeError) {
+      console.error('Delete user - Stripe cancellation failed:', stripeError);
+      throw new Error('Unable to cancel the subscription with the payment provider');
     }
 
     // Delete user (chats and messages will cascade delete)

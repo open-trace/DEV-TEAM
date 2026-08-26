@@ -1,6 +1,14 @@
 const router = require('express').Router();
 const auth = require('../middleware/authMiddleware');
-const { getProfile, updateProfile, deleteAccount, setCountry, getSettings, updateSettings } = require('../controllers/userController');
+const {
+  getProfile,
+  updateProfile,
+  deleteAccount,
+  setCountry,
+  completeOnboarding,
+  getSettings,
+  updateSettings
+} = require('../controllers/userController');
 
 /**
  * @route   GET /api/users/me
@@ -29,6 +37,14 @@ router.delete('/me', auth, deleteAccount);
  * @access  Protected (requires authentication)
  */
 router.patch('/country', auth, setCountry);
+
+/**
+ * @route   POST /api/users/onboarding
+ * @desc    Complete onboarding after a plan is selected (role/profession,
+ *          intended usage, optional organization, and the required acknowledgements)
+ * @access  Protected (requires authentication)
+ */
+router.post('/onboarding', auth, completeOnboarding);
 
 /**
  * @route   GET /api/users/settings

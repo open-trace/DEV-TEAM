@@ -18,6 +18,11 @@ model User {
   country   String?  // Required for email/password at signup; null briefly for new social users until they set it (set once, never updated)
   provider  String   @default("local") // "local" (email/password) or "google"
   googleId  String?  @unique // Google account ID (sub claim) for social-login accounts
+  organization     String?   // Organization / company name from onboarding (optional)
+  profession       String?   // Role / profession from onboarding (required at onboarding; one of PROFESSIONS)
+  intendedUsage    String?   @db.Text // What the user plans to use OpenTrace for (required at onboarding)
+  termsAcceptedAt  DateTime? // When all required acknowledgements were given; null = onboarding not completed
+  acknowledgements Json?     // Which acknowledgements were given, e.g. {"privacyPolicy":true,"termsOfUse":true,"knowledgeCentre":true}
   emailVerified            Boolean   @default(false)
   emailVerificationToken   String?   @unique
   emailVerificationExpires DateTime?

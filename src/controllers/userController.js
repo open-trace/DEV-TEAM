@@ -1,15 +1,40 @@
 const authService = require('../services/authService');
-const { getUserSettings, updateUserSettings, setUserCountry } = require('../services/userService');
-const { isValidEmail, isValidPassword, isValidName } = require('../utils/validators');
+const {
+  getUserSettings,
+  updateUserSettings,
+  setUserCountry,
+  getUserProfile,
+  completeOnboarding
+} = require('../services/userService');
+const {
+  isValidEmail,
+  isValidPassword,
+  isValidName,
+  isValidOrganization,
+  isValidIntendedUsage,
+  normalizeProfession
+} = require('../utils/validators');
 
 /**
  * Get current user's profile
  * @route GET /api/users/me
  * @access Protected
  */
-exports.getProfile = (req, res) => {
-  // req.user is set by auth middleware
-  res.json(req.user);
+exports.getProfile = async (req, res) => {
+  try {
+    // req.user carries only the columns the auth gates need, so read the full
+    // profile (including the onboarding fields) here.
+    const result = await getUserProfile(req.user.id);
+
+    if (!result.success) {
+      return res.status(404).json({ error: result.message });
+    }
+
+    res.json(result.user);
+  } catch (error) {
+    console.error('Get profile error:', error);
+    res.status(500).json({ error: 'Failed to retrieve profile' });
+  }
 };
 
 /**
@@ -19,8 +44,10 @@ exports.getProfile = (req, res) => {
  */
 exports.updateProfile = async (req, res) => {
   try {
-    const { name, email, password } = req.body;
+    const { name, email, password, organization, intendedUsage } = req.body;
     const userId = req.user.id;
+    // The frontend labels this field "Role / Profession", so accept either name.
+    const profession = req.body.profession !== undefined ? req.body.profession : req.body.role;
 
     // Validate name if provided
     if (name !== undefined && !isValidName(name)) {
@@ -40,8 +67,39 @@ exports.updateProfile = async (req, res) => {
       }
     }
 
+    // Validate the onboarding fields if provided. Terms acceptance is not
+    // editable here - it is a record of what happened, not a preference.
+    let canonicalProfession;
+    if (profession !== undefined) {
+      canonicalProfession = normalizeProfession(profession);
+      if (!canonicalProfession) {
+        return res.status(400).json({ error: 'A valid role / profession is required' });
+      }
+    }
+
+    if (intendedUsage !== undefined) {
+      const usageValidation = isValidIntendedUsage(intendedUsage);
+      if (!usageValidation.isValid) {
+        return res.status(400).json({ error: usageValidation.message });
+      }
+    }
+
+    if (organization !== undefined) {
+      const organizationValidation = isValidOrganization(organization);
+      if (!organizationValidation.isValid) {
+        return res.status(400).json({ error: organizationValidation.message });
+      }
+    }
+
     // Update user profile
-    const updatedUser = await authService.updateUser(userId, { name, email, password });
+    const updatedUser = await authService.updateUser(userId, {
+      name,
+      email,
+      password,
+      organization,
+      profession: canonicalProfession,
+      intendedUsage
+    });
     
     if (!updatedUser) {
       return res.status(400).json({ error: 'Email already exists' });
@@ -119,6 +177,47 @@ exports.setCountry = async (req, res) => {
   } catch (error) {
     console.error('Set country error:', error);
     res.status(500).json({ error: 'Failed to set country' });
+  }
+};
+
+/**
+ * Complete onboarding (the form shown after a plan is selected).
+ * Accepts organization, role/profession, intendedUsage and the three
+ * acknowledgements. Name, email and country are read-only on that form and are
+ * deliberately not accepted here.
+ * @route POST /api/users/onboarding
+ * @access Protected
+ */
+exports.completeOnboarding = async (req, res) => {
+  try {
+    const { organization, profession, role, intendedUsage, acknowledgements } = req.body;
+    const userId = req.user.id;
+
+    const result = await completeOnboarding(userId, {
+      organization,
+      profession,
+      role,
+      intendedUsage,
+      acknowledgements
+    });
+
+    if (!result.success) {
+      if (result.message === 'User not found') {
+        return res.status(404).json({ error: result.message });
+      }
+
+      // `missing` lists the unchecked acknowledgements so the frontend can
+      // highlight the exact boxes rather than showing a generic error.
+      return res.status(400).json({
+        error: result.message,
+        ...(result.missing ? { missing: result.missing } : {})
+      });
+    }
+
+    res.status(200).json(result);
+  } catch (error) {
+    console.error('Complete onboarding error:', error);
+    res.status(500).json({ error: 'Failed to complete onboarding' });
   }
 };
 

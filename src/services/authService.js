@@ -211,7 +211,7 @@ const loginUser = async (email, password) => {
  */
 const updateUser = async (userId, updates) => {
   try {
-    const { name, email, password } = updates;
+    const { name, email, password, organization, profession, intendedUsage } = updates;
     const updateData = {};
 
     // Add name if provided
@@ -239,6 +239,22 @@ const updateUser = async (userId, updates) => {
       updateData.password = await bcrypt.hash(password, salt);
     }
 
+    // Onboarding fields. An empty organization clears it back to null so the
+    // column never holds an empty string alongside genuine nulls.
+    if (organization !== undefined) {
+      // null or blank both mean "no organization"; store null either way.
+      updateData.organization =
+        typeof organization === 'string' ? organization.trim() || null : null;
+    }
+
+    if (profession !== undefined) {
+      updateData.profession = profession;
+    }
+
+    if (intendedUsage !== undefined) {
+      updateData.intendedUsage = intendedUsage.trim();
+    }
+
     // Update user in database
     const updatedUser = await prisma.user.update({
       where: { id: userId },
@@ -247,6 +263,10 @@ const updateUser = async (userId, updates) => {
         id: true,
         email: true,
         name: true,
+        country: true,
+        organization: true,
+        profession: true,
+        intendedUsage: true,
         createdAt: true
       }
     });
